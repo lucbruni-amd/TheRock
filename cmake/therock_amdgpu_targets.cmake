@@ -44,6 +44,17 @@ function(therock_add_amdgpu_target gfx_target product_name)
   endforeach()
 endfunction()
 
+# gfx803 (requires patches/gfx803 applied to rocm-systems)
+therock_add_amdgpu_target(gfx803 "Polaris / RX 550-580" FAMILY dgpu-all gfx803-dgpu
+  EXCLUDE_TARGET_PROJECTS
+    hipBLASLt
+    hipSPARSELt
+    composable_kernel
+    rocWMMA
+    rocprofiler-compute
+    MIOpen
+)
+
 # gfx900
 therock_add_amdgpu_target(gfx900 "Vega 10 / MI25" FAMILY dgpu-all gfx900-dgpu
   EXCLUDE_TARGET_PROJECTS

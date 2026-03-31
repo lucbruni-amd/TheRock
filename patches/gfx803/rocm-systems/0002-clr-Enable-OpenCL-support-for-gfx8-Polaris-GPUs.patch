@@ -1,0 +1,215 @@
+From be6e4e493fcd3b971c40307d4130d690e2ca7f44 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <lucbruni@amd.com>
+Date: Mon, 30 Mar 2026 18:22:07 -0400
+Subject: [PATCH 2/2] clr: Enable OpenCL support for gfx8 (Polaris) GPUs
+
+Two changes to allow gfx803 to work with the OpenCL runtime:
+
+1. device.hpp: Remove the hardcoded check that blocked all GFX8 GPUs
+   from the OpenCL (non-HIP) path in runtimeRocSupported(). The ISA
+   table already marks gfx803 as runtimeRocSupported_=true; the extra
+   versionMajor==8 gate was an unnecessary restriction.
+
+2. rocdevice.cpp: Make HSA image extension queries (IMAGE_2D_MAX, etc.)
+   non-fatal in populateOCLDeviceConstants(). On gfx803 these queries
+   return errors from the HSA image extension, but that should not
+   prevent the entire device from initializing. Image support is now
+   gracefully disabled while all other compute capabilities remain.
+
+Ref: https://github.com/ROCm/clr/issues/269
+Made-with: Cursor
+---
+ projects/clr/rocclr/device/device.hpp         |   3 -
+ projects/clr/rocclr/device/rocm/rocdevice.cpp | 126 +++++++++---------
+ 2 files changed, 60 insertions(+), 69 deletions(-)
+
+diff --git a/projects/clr/rocclr/device/device.hpp b/projects/clr/rocclr/device/device.hpp
+index 06908d20e9..2a9961db5d 100644
+--- a/projects/clr/rocclr/device/device.hpp
++++ b/projects/clr/rocclr/device/device.hpp
+@@ -1477,9 +1477,6 @@ class Isa {
+ 
+   /// @returns If the ROCm runtime supports the ISA.
+   bool runtimeRocSupported() const {
+-    if (!IS_HIP && (versionMajor_ == 8)) {
+-      return false;
+-    }
+     return runtimeRocSupported_;
+   }
+ 
+diff --git a/projects/clr/rocclr/device/rocm/rocdevice.cpp b/projects/clr/rocclr/device/rocm/rocdevice.cpp
+index 5712b6c522..f9ca4388c0 100644
+--- a/projects/clr/rocclr/device/rocm/rocdevice.cpp
++++ b/projects/clr/rocclr/device/rocm/rocdevice.cpp
+@@ -1382,108 +1382,102 @@ bool Device::populateOCLDeviceConstants() {
+   assert(HSA_EXTENSION_IMAGES < 8);
+   const bool image_is_supported = ((hsa_extensions[0] & (1 << HSA_EXTENSION_IMAGES)) != 0);
+   if (image_is_supported) {
+-    // Images
++    bool image_queries_ok = true;
++    uint32_t image_max_dim[3] = {0, 0, 0};
++
+     if (HSA_STATUS_SUCCESS !=
+         Hsa::agent_get_info(bkendDevice_,
+                             static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_MAX_SAMPLER_HANDLERS),
+                             &info_.maxSamplers_)) {
+-      return false;
++      image_queries_ok = false;
+     }
+ 
+-    if (HSA_STATUS_SUCCESS !=
++    if (image_queries_ok && HSA_STATUS_SUCCESS !=
+         Hsa::agent_get_info(bkendDevice_,
+                             static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_MAX_IMAGE_RD_HANDLES),
+                             &info_.maxReadImageArgs_)) {
+-      return false;
++      image_queries_ok = false;
+     }
+ 
+-    // TODO: no attribute for write image.
+     info_.maxWriteImageArgs_ = 8;
+ 
+-    if (HSA_STATUS_SUCCESS !=
++    if (image_queries_ok && HSA_STATUS_SUCCESS !=
+         Hsa::agent_get_info(bkendDevice_,
+                             static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_MAX_IMAGE_RORW_HANDLES),
+                             &info_.maxReadWriteImageArgs_)) {
+-      return false;
++      image_queries_ok = false;
+     }
+ 
+-    uint32_t image_max_dim[3];
+-    if (HSA_STATUS_SUCCESS !=
++    if (image_queries_ok && HSA_STATUS_SUCCESS !=
+         Hsa::agent_get_info(bkendDevice_,
+                             static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_2D_MAX_ELEMENTS),
+                             &image_max_dim)) {
+-      return false;
++      image_queries_ok = false;
+     }
+ 
+-    info_.image2DMaxWidth_ = image_max_dim[0];
+-    info_.image2DMaxHeight_ = image_max_dim[1];
++    if (image_queries_ok) {
++      info_.image2DMaxWidth_ = image_max_dim[0];
++      info_.image2DMaxHeight_ = image_max_dim[1];
+ 
+-    if (HSA_STATUS_SUCCESS !=
+-        Hsa::agent_get_info(bkendDevice_,
+-                            static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_3D_MAX_ELEMENTS),
+-                            &image_max_dim)) {
+-      return false;
++      if (HSA_STATUS_SUCCESS !=
++          Hsa::agent_get_info(bkendDevice_,
++                              static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_3D_MAX_ELEMENTS),
++                              &image_max_dim)) {
++        image_queries_ok = false;
++      }
+     }
+ 
+-    info_.image3DMaxWidth_ = image_max_dim[0];
+-    info_.image3DMaxHeight_ = image_max_dim[1];
+-    info_.image3DMaxDepth_ = image_max_dim[2];
++    if (image_queries_ok) {
++      info_.image3DMaxWidth_ = image_max_dim[0];
++      info_.image3DMaxHeight_ = image_max_dim[1];
++      info_.image3DMaxDepth_ = image_max_dim[2];
+ 
+-    uint32_t max_array_size = 0;
+-    if (HSA_STATUS_SUCCESS !=
+-        Hsa::agent_get_info(bkendDevice_,
+-                            static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_ARRAY_MAX_LAYERS),
+-                            &max_array_size)) {
+-      return false;
++      uint32_t max_array_size = 0;
++      if (HSA_STATUS_SUCCESS !=
++          Hsa::agent_get_info(bkendDevice_,
++                              static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_ARRAY_MAX_LAYERS),
++                              &max_array_size)) {
++        image_queries_ok = false;
++      } else {
++        info_.imageMaxArraySize_ = max_array_size;
++      }
+     }
+ 
+-    info_.imageMaxArraySize_ = max_array_size;
+-
+-    uint32_t max_image1da_width = 0;
+-    if (HSA_STATUS_SUCCESS !=
+-        Hsa::agent_get_info(bkendDevice_,
+-                            static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_1DA_MAX_ELEMENTS),
+-                            &max_image1da_width)) {
+-      return false;
+-    }
++    if (image_queries_ok) {
++      uint32_t max_image1da_width = 0;
++      Hsa::agent_get_info(bkendDevice_,
++                          static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_1DA_MAX_ELEMENTS),
++                          &max_image1da_width);
++      info_.image1DAMaxWidth_ = max_image1da_width;
+ 
+-    info_.image1DAMaxWidth_ = max_image1da_width;
++      uint32_t max_image2da_width[2] = {0, 0};
++      Hsa::agent_get_info(bkendDevice_,
++                          static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_2DA_MAX_ELEMENTS),
++                          &max_image2da_width);
++      info_.image2DAMaxWidth_[0] = max_image2da_width[0];
++      info_.image2DAMaxWidth_[1] = max_image2da_width[1];
+ 
+-    uint32_t max_image2da_width[2] = {0, 0};
+-    if (HSA_STATUS_SUCCESS !=
+-        Hsa::agent_get_info(bkendDevice_,
+-                            static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_2DA_MAX_ELEMENTS),
+-                            &max_image2da_width)) {
+-      return false;
+-    }
++      uint32_t max_image1d_width = 0;
++      Hsa::agent_get_info(bkendDevice_,
++                          static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_1D_MAX_ELEMENTS),
++                          &max_image1d_width);
++      info_.image1DMaxWidth_ = max_image1d_width;
+ 
+-    info_.image2DAMaxWidth_[0] = max_image2da_width[0];
+-    info_.image2DAMaxWidth_[1] = max_image2da_width[1];
++      Hsa::agent_get_info(bkendDevice_,
++                          static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_1DB_MAX_ELEMENTS),
++                          &image_max_dim);
++      info_.imageMaxBufferSize_ = (amd::IS_HIP) ? image_max_dim[0] : (1 << 27);
+ 
+-    uint32_t max_image1d_width = 0;
+-    if (HSA_STATUS_SUCCESS !=
+-        Hsa::agent_get_info(bkendDevice_,
+-                            static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_1D_MAX_ELEMENTS),
+-                            &max_image1d_width)) {
+-      return false;
++      info_.imagePitchAlignment_ = 256;
++      info_.imageBaseAddressAlignment_ = 256;
++      info_.bufferFromImageSupport_ = false;
++      info_.imageSupport_ = (info_.maxReadWriteImageArgs_ > 0) ? true : false;
+     }
+-    info_.image1DMaxWidth_ = max_image1d_width;
+ 
+-    if (HSA_STATUS_SUCCESS !=
+-        Hsa::agent_get_info(bkendDevice_,
+-                            static_cast<hsa_agent_info_t>(HSA_EXT_AGENT_INFO_IMAGE_1DB_MAX_ELEMENTS),
+-                            &image_max_dim)) {
+-      return false;
++    if (!image_queries_ok) {
++      LogWarning("Image extension queries failed, disabling image support");
++      info_.imageSupport_ = false;
+     }
+-    info_.imageMaxBufferSize_ = (amd::IS_HIP) ? image_max_dim[0] : (1 << 27);
+-
+-    info_.imagePitchAlignment_ = 256;
+-
+-    info_.imageBaseAddressAlignment_ = 256;
+-
+-    info_.bufferFromImageSupport_ = false;
+-
+-    info_.imageSupport_ = (info_.maxReadWriteImageArgs_ > 0) ? true : false;
+   }
+ 
+   // Enable SVM Capabilities of Hsa device. Ensure
+-- 
+2.43.0
+
