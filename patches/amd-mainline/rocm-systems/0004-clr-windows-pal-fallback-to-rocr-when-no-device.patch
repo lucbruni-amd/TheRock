@@ -1,40 +1,16 @@
-From 911c9915ad852b20efdc3a036a5a3222458d6be7 Mon Sep 17 00:00:00 2001
+From 53837d7c989173a04ef017e9eb40951556e937bd Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Thu, 9 Oct 2026 12:00:00 -0500
 Subject: [PATCH] clr-windows-pal-fallback-to-rocr-when-no-device (fix 10): PAL->ROCr fallback
 
-gfx9-win fix 10, rebased to current pin (empty-string structure).
+gfx9-win fix 10: PAL-less Windows forces ROCr; PAL-default Windows that enumerates
+no device falls back to ROCr in Device::init() after PalDeviceLoad.
 ---
 diff --git a/projects/clr/rocclr/device/device.cpp b/projects/clr/rocclr/device/device.cpp
-index 2984751398..783edc7040 100644
+index 50175986ce..6e7002d639 100644
 --- a/projects/clr/rocclr/device/device.cpp
 +++ b/projects/clr/rocclr/device/device.cpp
-@@ -816,6 +816,24 @@ bool Device::BlitProgram::create(amd::Device* device, const std::string& extraKe
-     opt += " -Wb,-amdgpu-kernarg-preload-count=8 ";
-   }
- #if defined(__clang__)
-+#if defined(WITH_HSA_DEVICE)
-+    // gfx9 (and any part PAL cannot enumerate) on Windows: when the PAL path was selected only by
-+    // the Windows default above and registered no online GPU device, fall back to the ROCr backend
-+    // so the GPU is usable without the user having to set GPU_ENABLE_PAL=0. RDNA parts PAL can
-+    // enumerate are unaffected (numDevices is non-zero); an explicit GPU_ENABLE_PAL=1 is respected.
-+    // (GPU_ENABLE_PAL is still 1 here, so rocdevice.cpp's "== 2" gfx942-only guard does not block it.)
-+    if (windows_default_pal &&
-+        (amd::Device::numDevices(CL_DEVICE_TYPE_GPU, false) == 0)) {
-+      if (roc::Device::init()) {
-+        AMD_DIRECT_DISPATCH = true;
-+        GPU_ENABLE_PAL = 0;
-+        ret = true;
-+        if (!amd::IS_HIP) {
-+          ret |= roc::NullDevice::init();
-+        }
-+      }
-+    }
-+#endif  // WITH_HSA_DEVICE
- #if __has_feature(address_sanitizer)
-   opt += " -fsanitize=address ";
- #endif
-@@ -842,6 +860,8 @@ bool Device::init() {
+@@ -841,6 +841,8 @@ bool Device::init() {
    devices_ = nullptr;
    appProfile_.init();
  
@@ -43,7 +19,7 @@ index 2984751398..783edc7040 100644
    // Check if GPU_ENABLE_PAL env var is empty string, consider it as default
    const char* gpu_enable_pal_env = getenv("GPU_ENABLE_PAL");
    bool gpu_enable_pal_is_empty_string = (gpu_enable_pal_env != nullptr && gpu_enable_pal_env[0] == '\0');
-@@ -849,17 +869,23 @@ bool Device::init() {
+@@ -848,17 +850,23 @@ bool Device::init() {
    // Bug fix: atoi("") returns 0, but empty string should mean "use platform default"
    if (gpu_enable_pal_is_empty_string) {
      if (IS_WINDOWS) {
@@ -60,17 +36,41 @@ index 2984751398..783edc7040 100644
 +    // On Windows by default keep PAL path for now, until we completely switch to ROCr backend.
      GPU_ENABLE_PAL = 1;
 +    windows_default_pal = true;
-   }
++  }
 +#else
 +  // PAL-less (ROCr-only) build: force ROCr on Windows default; the default (2) trips rocdevice.cpp's
 +  // "disable HSA except gfx942" guard, so gfx9 would get no device; 0 bypasses it.
 +  if (IS_WINDOWS && flagIsDefault(GPU_ENABLE_PAL)) {
 +    GPU_ENABLE_PAL = 0;
-+  }
+   }
 +#endif  // WITH_PAL_DEVICE
  
  // IMPORTANT: Note that we are initialiing HSA stack first and then
  // GPU stack. The order of initialization is signiicant and if changed
+@@ -905,6 +913,23 @@ bool Device::init() {
+     ClPrint(amd::LOG_INFO, amd::LOG_INIT, "PAL backend initialized");
+   }
+ #endif  // WITH_PAL_DEVICE
++
++#if defined(WITH_HSA_DEVICE)
++  // gfx9 (and any part PAL cannot enumerate) on Windows: when the PAL path was selected only by
++  // the Windows default above and registered no online GPU device, fall back to the ROCr backend
++  // so the GPU is usable without the user having to set GPU_ENABLE_PAL=0. RDNA parts PAL can
++  // enumerate are unaffected (numDevices is non-zero); an explicit GPU_ENABLE_PAL=1 is respected.
++  if (windows_default_pal && (amd::Device::numDevices(CL_DEVICE_TYPE_GPU, false) == 0)) {
++    if (roc::Device::init()) {
++      AMD_DIRECT_DISPATCH = true;
++      GPU_ENABLE_PAL = 0;
++      ret = true;
++      if (!amd::IS_HIP) {
++        ret |= roc::NullDevice::init();
++      }
++    }
++  }
++#endif  // WITH_HSA_DEVICE
+   return ret;
+ }
+ 
 -- 
 2.40.0
 
