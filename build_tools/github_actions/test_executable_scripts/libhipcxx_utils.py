@@ -1,3 +1,4 @@
+import ctypes
 import os
 import platform
 import re
@@ -15,6 +16,20 @@ def prepend_env_path(env: dict, var_name: str, new_path: str):
         env[var_name] = f"{new_path}{os.pathsep}{existing}"
     else:
         env[var_name] = new_path
+
+
+def set_dll_directory(path: str | None) -> None:
+    """Add a DLL search dir ahead of System32.
+
+    PATH can't override a stale amdhip64_7.dll in System32; SetDllDirectoryW can,
+    without copying DLLs into the artifact (TheRock#7132). Child processes inherit
+    it, including ones launched through ninja and lit. None restores default.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetDllDirectoryW.argtypes = [ctypes.c_wchar_p]
+    kernel32.SetDllDirectoryW.restype = ctypes.c_bool
+    if not kernel32.SetDllDirectoryW(path):
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
 def _try_offload_arch(therock_build_dir: str, file_ending: str):

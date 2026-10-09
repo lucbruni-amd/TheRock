@@ -1,0 +1,50 @@
+From 950402ac96ab4556d7e3f916450e3e3f9866ff20 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Thu, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] gfx9-win: hip-tests-warp-reduce-llp64
+
+
+---
+--- a/projects/hip-tests/catch/unit/rtc/rtc_reduce.cc
++++ b/projects/hip-tests/catch/unit/rtc/rtc_reduce.cc
+@@ -146,7 +146,7 @@
+ 
+       for (int i = 0; i < *numReduces; i++) {
+         int idx = warpSize * i + laneId;
+-        if (masks[i] & (1ul << tid)) {
++        if (masks[i] & (1ull << tid)) {
+           // call the operator only if the lane is mentioned in the mask
+           T& result = output[idx];
+           result = )" +
+--- a/projects/hip-tests/catch/unit/warp/warp_reduce.cc
++++ b/projects/hip-tests/catch/unit/warp/warp_reduce.cc
+@@ -33,7 +33,7 @@
+ 
+   while (numMask < numMasks && !isInAnyOfTheMasks) {
+     mask = masks[numMask];
+-    if ((1ul << threadIdx.x) & mask) isInAnyOfTheMasks = true;
++    if ((1ull << threadIdx.x) & mask) isInAnyOfTheMasks = true;
+ 
+     numMask++;
+   }
+@@ -49,7 +49,7 @@
+   int laneId = tid % warpSize;
+ 
+   for (int i = 0; i < numReduces; i++) {
+-    if (masks[i] & (1ul << laneId)) {
++    if (masks[i] & (1ull << laneId)) {
+       int idx = warpSize * i + laneId;
+       // call the operator only if the lane is mentioned in the mask
+       T& result = output[idx];
+@@ -102,7 +102,7 @@
+     int lane = 0;
+ 
+     while (lane < wavefrontSize) {
+-      if ((1ul << lane) & mask) {
++      if ((1ull << lane) & mask) {
+         T result = output.ptr()[lane];
+ 
+         if constexpr (std::is_integral<T>::value) {
+-- 
+2.40.0
+

@@ -1,0 +1,50 @@
+From a81708d9ab831ba5acb70eccce83bad5b465e10a Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Thu, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] gfx9-win: clr-isa-gfx9-client-apus-xnack-unsupported
+
+
+---
+--- a/projects/clr/rocclr/device/device.cpp
++++ b/projects/clr/rocclr/device/device.cpp
+@@ -118,9 +118,10 @@
+       {"gfx900", true, true, 9, 0, 0, NONE, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
+       {"gfx900:xnack-", true, true, 9, 0, 0, NONE, OFF, 4, 16, 1, 256, 64 * Ki, 32, 512},
+       {"gfx900:xnack+", true, true, 9, 0, 0, NONE, ON, 4, 16, 1, 256, 64 * Ki, 32, 512},
+-      {"gfx902", true, true, 9, 0, 2, NONE, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
+-      {"gfx902:xnack-", true, true, 9, 0, 2, NONE, OFF, 4, 16, 1, 256, 64 * Ki, 32, 512},
+-      {"gfx902:xnack+", true, true, 9, 0, 2, NONE, ON, 4, 16, 1, 256, 64 * Ki, 32, 512},
++      // gfx9 client APUs run XNACK-off: ROCr reports the neutral target id and accepts :xnack-
++      // code objects (rocm-systems #8237), so treat both names as "xnack unsupported" here too.
++      {"gfx902", true, true, 9, 0, 2, NONE, NONE, 4, 16, 1, 256, 64 * Ki, 32, 512},
++      {"gfx902:xnack-", true, true, 9, 0, 2, NONE, NONE, 4, 16, 1, 256, 64 * Ki, 32, 512},
+       {"gfx904", true, true, 9, 0, 4, NONE, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
+       {"gfx904:xnack-", true, true, 9, 0, 4, NONE, OFF, 4, 16, 1, 256, 64 * Ki, 32, 512},
+       {"gfx904:xnack+", true, true, 9, 0, 4, NONE, ON, 4, 16, 1, 256, 64 * Ki, 32, 512},
+@@ -147,9 +148,8 @@
+       {"gfx908:sramecc+:xnack-", true, false, 9, 0, 8, ON, OFF, 4, 16, 1, 256, 64 * Ki,
+        32, 512},
+       {"gfx908:sramecc+:xnack+", true, false, 9, 0, 8, ON, ON, 4, 16, 1, 256, 64 * Ki, 32, 512},
+-      {"gfx909", false, true, 9, 0, 2, NONE, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
+-      {"gfx909:xnack-", false, true, 9, 0, 2, NONE, OFF, 4, 16, 1, 256, 64 * Ki, 32, 512},
+-      {"gfx909:xnack+", false, true, 9, 0, 2, NONE, ON, 4, 16, 1, 256, 64 * Ki, 32, 512},
++      {"gfx909", false, true, 9, 0, 2, NONE, NONE, 4, 16, 1, 256, 64 * Ki, 32, 512},
++      {"gfx909:xnack-", false, true, 9, 0, 2, NONE, NONE, 4, 16, 1, 256, 64 * Ki, 32, 512},
+       {"gfx90a", true, false, 9, 0, 10, ANY, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
+       {"gfx90a:sramecc-", true, false, 9, 0, 10, OFF, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
+       {"gfx90a:sramecc+", true, false, 9, 0, 10, ON, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
+@@ -175,9 +175,8 @@
+       {"gfx942:sramecc+:xnack-", true, false, 9, 4, 2, ON, OFF, 4, 16, 1, 256, 64 * Ki,
+        32, 512},
+       {"gfx942:sramecc+:xnack+", true, false, 9, 4, 2, ON, ON, 4, 16, 1, 256, 64 * Ki, 32, 512},
+-      {"gfx90c", true, true, 9, 0, 12, NONE, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
+-      {"gfx90c:xnack-", true, true, 9, 0, 12, NONE, OFF, 4, 16, 1, 256, 64 * Ki, 32, 512},
+-      {"gfx90c:xnack+", true, true, 9, 0, 12, NONE, ON, 4, 16, 1, 256, 64 * Ki, 32, 512},
++      {"gfx90c", true, true, 9, 0, 12, NONE, NONE, 4, 16, 1, 256, 64 * Ki, 32, 512},
++      {"gfx90c:xnack-", true, true, 9, 0, 12, NONE, NONE, 4, 16, 1, 256, 64 * Ki, 32, 512},
+       {"gfx950", true, false, 9, 5, 0, ANY, ANY, 4, 16, 1, 256, 160 * Ki, 64, 1280},
+       {"gfx950:sramecc-", true, false, 9, 5, 0, OFF, ANY, 4, 16, 1, 256, 160 * Ki, 64, 1280},
+       {"gfx950:sramecc+", true, false, 9, 5, 0, ON, ANY, 4, 16, 1, 256, 160 * Ki, 64, 1280},
+-- 
+2.40.0
+

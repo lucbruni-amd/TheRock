@@ -1,0 +1,25 @@
+From e6b6e81fb889defa862d34ba8cb1869eb114f22d Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Thu, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] gfx9-win: miopen-legacy-ck-gfx9-apus
+
+
+---
+--- a/projects/miopen/src/legacy_composable_kernel/composable_kernel/include/utility/config.hpp
++++ b/projects/miopen/src/legacy_composable_kernel/composable_kernel/include/utility/config.hpp
+@@ -4,6 +4,12 @@
+ #ifndef CK_CONFIG_AMD_HPP
+ #define CK_CONFIG_AMD_HPP
+ 
++// gfx9 APUs (gfx902, gfx909, gfx90c) have the gfx900 feature set (no dot or fmac instructions),
++// so they take the gfx900 code paths below.
++#if defined(CK_AMD_GPU_GFX902) || defined(CK_AMD_GPU_GFX909) || defined(CK_AMD_GPU_GFX90C)
++#define CK_AMD_GPU_GFX900
++#endif
++
+ #ifndef MIOPEN_HIP_RUNTIME_COMPILE
+ #include "hip/hip_runtime.h"
+ #include "hip/hip_fp16.h"
+-- 
+2.40.0
+

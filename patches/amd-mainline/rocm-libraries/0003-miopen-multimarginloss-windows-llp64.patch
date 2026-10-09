@@ -1,0 +1,21 @@
+From a34a5d9e8cf34259710c945790f71ff82ab2f3f7 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Thu, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] gfx9-win: miopen-multimarginloss-windows-llp64
+
+
+---
+--- a/projects/miopen/src/include/miopen/multimarginloss/invoke_params.hpp
++++ b/projects/miopen/src/include/miopen/multimarginloss/invoke_params.hpp
+@@ -46,7 +46,7 @@
+     ConstData_t w = nullptr;
+     Data_t o      = nullptr;
+ 
+-    long p;
++    int64_t p; // the kernel takes int64_t; long is 32-bit on Windows
+     float margin;
+ 
+     Data_t workspace           = nullptr;
+-- 
+2.40.0
+

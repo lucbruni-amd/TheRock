@@ -1,0 +1,54 @@
+From 79461ab7af3c8da1c08e72976f1fe356a6406def Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Thu, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] gfx9-win: clr-mempool-windows-apu-vmheap-and-7988-rollback
+
+
+---
+diff --git a/projects/clr/rocclr/device/rocm/rocdevice.cpp b/projects/clr/rocclr/device/rocm/rocdevice.cpp
+--- a/projects/clr/rocclr/device/rocm/rocdevice.cpp
++++ b/projects/clr/rocclr/device/rocm/rocdevice.cpp
+@@ -1252,6 +1252,15 @@
+   // Check if the device is APU
+   if (hsa_flag_isset64(memory_properties, HSA_AMD_MEMORY_PROPERTY_AGENT_IS_APU)) {
+     info_.hostUnifiedMemory_ = 1;
++#if defined(_WIN32)
++    // The Windows thunk backs VMM physical memory with the device-local heap, which on an APU is
++    // only the small VRAM carve-out. The memory pool VM heap commits 128 MiB physical chunks from
++    // it, so hipMallocAsync fails long before the reported memory is used up. Use the plain pool
++    // there, as PAL does.
++    if (flagIsDefault(DEBUG_HIP_MEM_POOL_VMHEAP)) {
++      DEBUG_HIP_MEM_POOL_VMHEAP = false;
++    }
++#endif
+   }
+ 
+   if (settings().enableLocalMemory_ && gpuvm_segment_.handle != 0) {
+diff --git a/projects/clr/rocclr/platform/vmheap.cpp b/projects/clr/rocclr/platform/vmheap.cpp
+--- a/projects/clr/rocclr/platform/vmheap.cpp
++++ b/projects/clr/rocclr/platform/vmheap.cpp
+@@ -289,7 +289,9 @@
+       InsertBlock(&busy_list_, walk);
+       free_size_ -= size;
+       if (!MapPhysMemory(walk->Offset(), size)) {
+-        free(walk);
++        // Undo the busy list insertion and the free_size_ update above, and release any
++        // chunks MapPhysMemory committed before it ran out of physical memory.
++        FreeBlock(walk);
+         return nullptr;
+       }
+       return walk;
+@@ -305,7 +307,9 @@
+     InsertBlock(&busy_list_, newblock);
+     free_size_ -= size;
+     if (!MapPhysMemory(newblock->Offset(), size)) {
+-      free(newblock);
++      // Same rollback as above. FreeBlock() also merges the block back into its
++      // neighbour, undoing the SplitBlock().
++      FreeBlock(newblock);
+       return nullptr;
+     }
+     return newblock;
+-- 
+2.40.0
+

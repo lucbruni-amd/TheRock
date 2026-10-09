@@ -1,0 +1,30 @@
+From 7276d4d23ceeaa87028615da67b5b8eb5caa15f1 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Thu, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] gfx9-win: rocprim-tests-gfx90X-windows-quick-partition
+
+
+---
+--- a/projects/rocprim/test/test_categories.yaml
++++ b/projects/rocprim/test/test_categories.yaml
+@@ -191,6 +191,17 @@
+       - "comprehensive"
+       - "ex_gpu_gfx1151"
+ 
++  exclude_gpu_gfx90X_windows:
++    # Windows-only: gfx9 iGPUs (gfx90c). The partition test passes but its 1 KiB-element cases
++    # move about 1 GiB per array through shared system memory and take ~190 s of the binary's
++    # ~375 s, over the 300 s quick timeout. They stay in the longer tiers.
++    test_patterns:
++      # tests from test_device_partition binary (custom_huge_type<1024>)
++      - "RocprimDevicePartitionTests/11.*"
++    labels:
++      - "ex_gpu_gfx90X"
++      - "quick"
++
+ execution_settings:
+   default_timeout: 300
+   timeout_multiplier: 1 # Multiplier for all timeouts (1, 1.5, 1.75, 2, etc.)
+-- 
+2.40.0
+

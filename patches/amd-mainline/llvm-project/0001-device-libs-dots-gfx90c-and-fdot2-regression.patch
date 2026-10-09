@@ -1,0 +1,25 @@
+From 1c104c45cfcb8d07b0bc8dad917b89ea44480d36 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Thu, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] gfx9-win: device-libs-dots-gfx90c-and-fdot2-regression
+
+
+---
+--- a/amd/device-libs/ockl/src/dots.cl
++++ b/amd/device-libs/ockl/src/dots.cl
+@@ -67,9 +67,9 @@
+                         return __builtin_amdgcn_sudot8(true , a, true , b, c, true );
+ }
+ 
+-#define SWDOT __oclc_ISA_version < 9006 || __oclc_ISA_version == 9009 || __oclc_ISA_version == 10100 || __oclc_ISA_version >= 12500
+-#define SWFDOT (__oclc_ISA_version >= 10200 && __oclc_ISA_version < 10300) || __oclc_ISA_version >= 12500
+-#define SWIDOT2 __oclc_ISA_version < 9006 || __oclc_ISA_version == 9009 || __oclc_ISA_version == 10100 || __oclc_ISA_version >= 11000
++#define SWDOT __oclc_ISA_version < 9006 || __oclc_ISA_version == 9009 || __oclc_ISA_version == 9012 || __oclc_ISA_version == 10100 || __oclc_ISA_version == 10103 || __oclc_ISA_version >= 12500
++#define SWFDOT __oclc_ISA_version < 9006 || __oclc_ISA_version == 9009 || __oclc_ISA_version == 9012 || __oclc_ISA_version == 10100 || __oclc_ISA_version == 10103 || (__oclc_ISA_version >= 10200 && __oclc_ISA_version < 10300) || __oclc_ISA_version >= 12500
++#define SWIDOT2 __oclc_ISA_version < 9006 || __oclc_ISA_version == 9009 || __oclc_ISA_version == 9012 || __oclc_ISA_version == 10100 || __oclc_ISA_version == 10103 || __oclc_ISA_version >= 11000
+ #define SUDOT __oclc_ISA_version >= 11000
+ 
+ #define AS_INT(X) __builtin_astype(X, int)
+-- 
+2.40.0
+

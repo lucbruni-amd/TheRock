@@ -1,0 +1,27 @@
+From a5308f756bcd504531e4f1716fcbc42c82a1a564 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Thu, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] gfx9-win: dxg-gfx9-acquire-mem-invalidate-vector-l1
+
+
+---
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp
+@@ -120,7 +120,13 @@
+     acq.acquire_mem.bitfields2.coher_cntl =
+       (1 << 29) | // CP_COHER_CNTL__SH_ICACHE_ACTION_ENA_MASK
+       (1 << 27) | // CP_COHER_CNTL__SH_KCACHE_ACTION_ENA_MASK
+-      (1 << 28);  // CP_COHER_CNTL__SH_KCACHE_VOL_ACTION_ENA_MASK
++      (1 << 28) | // CP_COHER_CNTL__SH_KCACHE_VOL_ACTION_ENA_MASK
++      // The vector L1 (TCP) is per CU and not coherent with other CUs, so it must be invalidated
++      // before each dispatch or a kernel can read stale lines left by an earlier kernel. Matches
++      // the gfx9 mem sync in the Linux kernel driver (gfx_v9_0_emit_mem_sync).
++      (1 << 23) | // CP_COHER_CNTL__TC_ACTION_ENA_MASK
++      (1 << 22) | // CP_COHER_CNTL__TCL1_ACTION_ENA_MASK
++      (1 << 18);  // CP_COHER_CNTL__TC_WB_ACTION_ENA_MASK
+     memcpy(pBuffer, &acq, sizeof(acq));
+     ret = sizeof(acq);
+   } else if (major >= 10) {
+-- 
+2.40.0
+

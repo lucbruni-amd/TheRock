@@ -25,6 +25,8 @@ import logging
 import shlex
 from pathlib import Path
 
+from libhipcxx_utils import set_dll_directory
+
 THEROCK_BIN_DIR = os.getenv("THEROCK_BIN_DIR")
 SCRIPT_DIR = Path(__file__).resolve().parent
 THEROCK_DIR = SCRIPT_DIR.parent.parent.parent
@@ -496,7 +498,11 @@ def generate_resource_spec():
 
     # generate_resource_spec links against the HIP runtime; prepend the ROCm
     # bin/lib dirs so it resolves on every platform (Windows via PATH, Linux
-    # via LD_LIBRARY_PATH / RPATH).
+    # via LD_LIBRARY_PATH / RPATH). It sits in a bin/ subdirectory with no DLLs
+    # beside it, and Windows searches System32 before PATH, so a driver-installed
+    # amdhip64_7.dll there would win (TheRock#7132). See set_dll_directory.
+    if platform.system() == "Windows":
+        set_dll_directory(str(Path(THEROCK_BIN_DIR).resolve()))
     gen_env = environ_vars.copy()
     gen_env["PATH"] = os.pathsep.join(
         filter(None, [str(Path(THEROCK_BIN_DIR).resolve()), gen_env.get("PATH", "")])

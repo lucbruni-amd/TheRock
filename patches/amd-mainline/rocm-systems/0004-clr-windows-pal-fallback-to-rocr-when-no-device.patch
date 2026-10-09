@@ -1,0 +1,84 @@
+From f6ba5f9e4a8efb824064f648651362fb7b8d33e8 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Thu, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] CLR: on Windows use ROCr when PAL has no device (gfx9 without GPU_ENABLE_PAL=0)
+
+Device::init() unconditionally forces GPU_ENABLE_PAL=1 on Windows when the flag is
+left at its default. PAL has no gfx9 support on Windows, so a gfx9 part gets no device
+unless the user sets GPU_ENABLE_PAL=0 by hand. Fix both build/runtime situations:
+
+1. PAL-less (ROCr-only) builds (ROCCLR_ENABLE_PAL=OFF): guard the PAL-force with
+   WITH_PAL_DEVICE and, in its absence, set GPU_ENABLE_PAL=0 on Windows default. (The
+   default 2 is not enough: rocdevice.cpp disables the HSA path for non-gfx942 Windows
+   devices when GPU_ENABLE_PAL==2, so gfx9 would still get no device; 0 bypasses that.)
+
+2. PAL-enabled builds (shipped TheRock Windows, ROCCLR_ENABLE_PAL=ON): PAL loads but
+   enumerates no gfx9 device. When the PAL path was chosen only by the Windows default
+   (not an explicit GPU_ENABLE_PAL=1) and registered no online GPU, fall back to
+   roc::Device::init(). GPU_ENABLE_PAL is still 1 there, so rocdevice.cpp's "==2" guard
+   does not block it.
+
+Either way gfx9 works out of the box. RDNA Windows parts PAL enumerates keep PAL
+(numDevices non-zero, fallback skipped; part 1 is a no-op in a PAL-on build). An
+explicit GPU_ENABLE_PAL=1 is respected.
+
+Validated (part 1) on a PAL-OFF Windows build on gfx90c: with GPU_ENABLE_PAL unset the
+GPU now enumerates (compute capability 9.0) and rocsolver-test GETRI passes 84/84,
+versus "No devices found" without the patch.
+---
+--- a/projects/clr/rocclr/device/device.cpp
++++ b/projects/clr/rocclr/device/device.cpp
+@@ -769,11 +769,23 @@
+   devices_ = nullptr;
+   appProfile_.init();
+ 
++#if defined(WITH_PAL_DEVICE)
++  bool windows_default_pal = false;
+   if (IS_WINDOWS && flagIsDefault(GPU_ENABLE_PAL)) {
+-    // On Windows by default keep PAL path for now, until we completely switch to ROCr backend
+-    // Without this, roc::Device::init() returns true & disables PAL path in below code
++    // On Windows by default keep PAL path for now, until we completely switch to ROCr backend.
++    // Only force this when PAL is compiled in; a PAL-less (ROCr-only) build must fall through to
++    // the ROCr auto-path below so gfx9 (which PAL does not support) still gets a device.
+     GPU_ENABLE_PAL = 1;
++    windows_default_pal = true;
++  }
++#else
++  // PAL-less (ROCr-only) build: force ROCr on Windows when the flag is default. The default (2)
++  // makes roc::Device::init() skip non-gfx942 Windows devices (the "disable HSA path by default"
++  // guard in rocdevice.cpp), so gfx9 would get no device; 0 bypasses that guard.
++  if (IS_WINDOWS && flagIsDefault(GPU_ENABLE_PAL)) {
++    GPU_ENABLE_PAL = 0;
+   }
++#endif  // WITH_PAL_DEVICE
+ 
+ // IMPORTANT: Note that we are initialiing HSA stack first and then
+ // GPU stack. The order of initialization is signiicant and if changed
+@@ -816,6 +828,24 @@
+       }
+     }
+     ret |= PalDeviceLoad();
++#if defined(WITH_HSA_DEVICE)
++    // gfx9 (and any part PAL cannot enumerate) on Windows: when the PAL path was selected only by
++    // the Windows default above and registered no online GPU device, fall back to the ROCr backend
++    // so the GPU is usable without the user having to set GPU_ENABLE_PAL=0. RDNA parts PAL can
++    // enumerate are unaffected (numDevices is non-zero); an explicit GPU_ENABLE_PAL=1 is respected.
++    // (GPU_ENABLE_PAL is still 1 here, so rocdevice.cpp's "== 2" gfx942-only guard does not block it.)
++    if (windows_default_pal &&
++        (amd::Device::numDevices(CL_DEVICE_TYPE_GPU, false) == 0)) {
++      if (roc::Device::init()) {
++        AMD_DIRECT_DISPATCH = true;
++        GPU_ENABLE_PAL = 0;
++        ret = true;
++        if (!amd::IS_HIP) {
++          ret |= roc::NullDevice::init();
++        }
++      }
++    }
++#endif  // WITH_HSA_DEVICE
+   }
+ #endif  // WITH_PAL_DEVICE
+   return ret;
+-- 
+2.40.0
+

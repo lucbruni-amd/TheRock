@@ -416,6 +416,17 @@ test_matrix = {
                 # https://github.com/ROCm/TheRock/actions/runs/35816223373/job/107038470972
                 "gfx125X-dcgpu",
             ],
+            "windows": [
+                # hipBLASLt has no kernels for these families: the build excludes hipBLASLt
+                # for every target in them (EXCLUDE_TARGET_PROJECTS in
+                # cmake/therock_amdgpu_targets.cmake, TheRock#1062). Windows families expose no
+                # individual targets here, so match the family strings.
+                "gfx900",
+                "gfx906",
+                "gfx90c",
+                "gfx101X-dgpu",
+                "gfx103X-all",
+            ],
         },
     },
     # SOLVER tests
@@ -933,6 +944,17 @@ test_matrix = {
                 # individual tests fail but GTEST_FILTER plumbing not available (ctest overrides env var)
                 # https://github.com/ROCm/TheRock/actions/runs/35914840519/job/107363782678
                 "gfx125X-dcgpu",
+            ],
+            "windows": [
+                # hipBLASLt has no kernels for these families: the build excludes hipBLASLt
+                # for every target in them (EXCLUDE_TARGET_PROJECTS in
+                # cmake/therock_amdgpu_targets.cmake, TheRock#1062). Windows families expose no
+                # individual targets here, so match the family strings.
+                "gfx900",
+                "gfx906",
+                "gfx90c",
+                "gfx101X-dgpu",
+                "gfx103X-all",
             ],
         },
     },
