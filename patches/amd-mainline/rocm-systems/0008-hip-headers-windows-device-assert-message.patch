@@ -1,13 +1,24 @@
-From 4ea4b040427c867d5d4e526079d0a8635fc645e1 Mon Sep 17 00:00:00 2001
+From df55d406c3b348912bd84a917cf62c3cf01dc784 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
-Date: Thu, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] gfx9-win: hip-headers-windows-device-assert-message
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] fix(clr): print the device assert message on Windows
 
+On Windows, assert() calls _wassert with wide strings, and the HIP device
+definition only called __builtin_trap(), so a failing device assert printed
+nothing. Narrow the expression and file name into a bounded local buffer
+(ASCII in practice, anything else prints as '?') and print them like
+__assert_fail does elsewhere.
 
+Checked on gfx90c: the message is printed per failing thread.
 ---
+ .../include/hip/amd_detail/hip_assert.h       | 26 ++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/projects/clr/hipamd/include/hip/amd_detail/hip_assert.h b/projects/clr/hipamd/include/hip/amd_detail/hip_assert.h
+index 245b7de71e..e13884271b 100644
 --- a/projects/clr/hipamd/include/hip/amd_detail/hip_assert.h
 +++ b/projects/clr/hipamd/include/hip/amd_detail/hip_assert.h
-@@ -17,9 +17,33 @@
+@@ -17,9 +17,33 @@ extern "C" __device__ inline __attribute__((weak)) void abort() { __builtin_trap
  // allows the function to exist as a global although its definition is
  // included in every compilation unit.
  #if defined(_WIN32) || defined(_WIN64)
@@ -43,5 +54,5 @@ Subject: [PATCH] gfx9-win: hip-headers-windows-device-assert-message
  }
  #else /* defined(_WIN32) || defined(_WIN64) */
 -- 
-2.40.0
+2.43.0
 

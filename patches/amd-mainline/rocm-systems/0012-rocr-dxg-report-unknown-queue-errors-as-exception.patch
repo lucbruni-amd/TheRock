@@ -1,7 +1,8 @@
-From 4c2c0971472302d83be57960de62694ee23b6769 Mon Sep 17 00:00:00 2001
+From 66527567b47610b50431f9c73a09fae71eadce37 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Tue, 13 Oct 2026 16:18:01 -0400
-Subject: [PATCH] gfx9-win: rocr-dxg-report-unknown-queue-errors-as-exception
+Subject: [PATCH] fix(rocr): report unknown dxg queue errors as
+ HSA_STATUS_ERROR_EXCEPTION
 
 ComputeQueue::HandleError() initializes the queue-inactive signal value to -1
 and only overwrites it for recognized statuses. -1 sets every error bit,

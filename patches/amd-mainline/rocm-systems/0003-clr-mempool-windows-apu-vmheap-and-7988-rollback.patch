@@ -1,10 +1,27 @@
-From fc95f2b35ba7275be28de20e6e1dd92bc3dcaa5b Mon Sep 17 00:00:00 2001
+From 8bf12b85a67bd384a4fe40a35636cd689393e8de Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
-Date: Thu, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] clr-mempool-windows-apu-vmheap-and-7988-rollback (fix 9): Windows-APU mempool VM heap off + FreeBlock
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] fix(clr): memory pool VM heap on Windows APUs and its failure
+ path
 
-gfx9-win fix 9, rebased to current pin.
+On Windows the ROCr thunk backs VMM physical memory with the device-local
+heap, which on an APU is only the small VRAM carve-out. The memory pool VM
+heap commits 128 MiB physical chunks from it, so hipMallocAsync fails long
+before the reported memory is used up. Use the plain pool there, as PAL does.
+
+The VM heap's failure path also frees a block that is still linked into the
+busy list (TheRock#7988), after which the heap corrupts itself (SEH floods,
+garbage sizes, hangs). Undo the busy list insertion and the free_size_ update
+and release committed chunks instead; FreeBlock() also merges the block back
+into its neighbour. This part applies to all OSes.
+
+Checked on gfx90c and gfx1036 (Windows ROCr): hipsparse 22,207/22,207 and
+rocsparse 18,642/18,642 with default settings (before: OOM, SEH, timeouts).
 ---
+ projects/clr/rocclr/device/rocm/rocdevice.cpp | 9 +++++++++
+ projects/clr/rocclr/platform/vmheap.cpp       | 8 ++++++--
+ 2 files changed, 15 insertions(+), 2 deletions(-)
+
 diff --git a/projects/clr/rocclr/device/rocm/rocdevice.cpp b/projects/clr/rocclr/device/rocm/rocdevice.cpp
 index b389f8d02d..cd85ae4a97 100644
 --- a/projects/clr/rocclr/device/rocm/rocdevice.cpp
@@ -52,5 +69,5 @@ index b0be00c625..b4641f0c1c 100644
      }
      return newblock;
 -- 
-2.40.0
+2.43.0
 

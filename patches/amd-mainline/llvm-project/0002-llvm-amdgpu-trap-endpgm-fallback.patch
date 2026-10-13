@@ -1,15 +1,39 @@
-From fcc8aef4ab9ebe8be96464f3f49495e0f00dddd0 Mon Sep 17 00:00:00 2001
+From b441ed3cf0d9836d6a5cf87c8007cc988c4ad9a5 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
-Date: Thu, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] gfx9-win: llvm-amdgpu-trap-endpgm-fallback
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] fix(AMDGPU): end the wave after llvm.trap when no trap
+ handler runs
 
+llvm.trap (__builtin_trap, a failed device assert) lowers to a bare
+s_trap 2 on targets with the AMDHSA trap handler ABI. Where no trap handler
+is installed (for example gfx9 on Windows with a KMD that refuses the
+set-trap-handler escape) s_trap is a no-op and the wave runs whatever
+follows: garbage results, engine resets, a poisoned GPU.
 
+Follow the trap with the existing ENDPGM_TRAP fallback (s_endpgm). It is
+unreachable when a handler exists, so behavior there is unchanged.
+
+Checked: the 28 trap tests (6 regenerated) and all 5145 CodeGen/AMDGPU tests
+pass; on gfx90c, __builtin_trap and assert now stop all 64 lanes at the trap
+and the GPU stays healthy.
 ---
+ llvm/docs/AMDGPUUsage.rst                     |   5 +
+ .../lib/Target/AMDGPU/AMDGPULegalizerInfo.cpp |  23 +--
+ llvm/lib/Target/AMDGPU/AMDGPULegalizerInfo.h  |   7 +-
+ llvm/lib/Target/AMDGPU/SIISelLowering.cpp     |  11 +-
+ .../GlobalISel/lds-global-non-entry-func.ll   |  22 ++-
+ .../AMDGPU/GlobalISel/legalize-trap-gfx11.mir |  20 ++-
+ .../AMDGPU/lds-global-non-entry-func.ll       | 162 +++++++++++++-----
+ .../si-unify-exit-multiple-unreachables.ll    |  25 ++-
+ llvm/test/CodeGen/AMDGPU/trap-abis.ll         |  18 +-
+ .../AMDGPU/vgpr-spill-placement-issue61083.ll |   8 +-
+ 10 files changed, 226 insertions(+), 75 deletions(-)
+
 diff --git a/llvm/docs/AMDGPUUsage.rst b/llvm/docs/AMDGPUUsage.rst
-index a7e1db5600f3..e640d300e04c 100644
+index 804a14298c83..0a59c1fd84e3 100644
 --- a/llvm/docs/AMDGPUUsage.rst
 +++ b/llvm/docs/AMDGPUUsage.rst
-@@ -20259,6 +20259,11 @@ supports the ``s_trap`` instruction. For usage see:
+@@ -20235,6 +20235,11 @@ supports the ``s_trap`` instruction. For usage see:
  - :ref:`amdgpu-trap-handler-for-amdhsa-os-v3-table`
  - :ref:`amdgpu-trap-handler-for-amdhsa-os-v4-onwards-table`
  
@@ -22,10 +46,10 @@ index a7e1db5600f3..e640d300e04c 100644
       :name: amdgpu-trap-handler-for-amdhsa-os-v2-table
  
 diff --git a/llvm/lib/Target/AMDGPU/AMDGPULegalizerInfo.cpp b/llvm/lib/Target/AMDGPU/AMDGPULegalizerInfo.cpp
-index 03987fb3f36b..9329a53c6a3c 100644
+index 6ca65e6fa01a..71168fba1fbe 100644
 --- a/llvm/lib/Target/AMDGPU/AMDGPULegalizerInfo.cpp
 +++ b/llvm/lib/Target/AMDGPU/AMDGPULegalizerInfo.cpp
-@@ -7887,8 +7887,9 @@ bool AMDGPULegalizerInfo::legalizeTrap(LegalizerHelper &Helper,
+@@ -7874,8 +7874,9 @@ bool AMDGPULegalizerInfo::legalizeTrap(LegalizerHelper &Helper,
        ST.getTrapHandlerAbi() != GCNSubtarget::TrapHandlerAbi::AMDHSA)
      return legalizeTrapEndpgm(Helper, MI);
  
@@ -37,7 +61,7 @@ index 03987fb3f36b..9329a53c6a3c 100644
  }
  
  bool AMDGPULegalizerInfo::legalizeTrapEndpgm(LegalizerHelper &Helper,
-@@ -7933,8 +7934,10 @@ bool AMDGPULegalizerInfo::legalizeTrapEndpgm(LegalizerHelper &Helper,
+@@ -7920,8 +7921,10 @@ bool AMDGPULegalizerInfo::legalizeTrapEndpgm(LegalizerHelper &Helper,
    return true;
  }
  
@@ -50,7 +74,7 @@ index 03987fb3f36b..9329a53c6a3c 100644
    MachineFunction &MF = B.getMF();
    const LLT I64 = LLT::integer(64);
  
-@@ -7973,8 +7976,7 @@ bool AMDGPULegalizerInfo::legalizeTrapHsaQueuePtr(
+@@ -7960,8 +7963,7 @@ bool AMDGPULegalizerInfo::legalizeTrapHsaQueuePtr(
      B.buildInstr(AMDGPU::S_TRAP)
          .addImm(static_cast<unsigned>(GCNSubtarget::TrapID::LLVMAMDHSATrap))
          .addReg(SGPR01, RegState::Implicit);
@@ -60,7 +84,7 @@ index 03987fb3f36b..9329a53c6a3c 100644
    }
  
    // Pass queue pointer to trap handler as input, and insert trap instruction
-@@ -7989,11 +7991,11 @@ bool AMDGPULegalizerInfo::legalizeTrapHsaQueuePtr(
+@@ -7976,11 +7978,11 @@ bool AMDGPULegalizerInfo::legalizeTrapHsaQueuePtr(
        .addImm(static_cast<unsigned>(GCNSubtarget::TrapID::LLVMAMDHSATrap))
        .addReg(SGPR01, RegState::Implicit);
  
@@ -75,7 +99,7 @@ index 03987fb3f36b..9329a53c6a3c 100644
                                            MachineRegisterInfo &MRI,
                                            MachineIRBuilder &B) const {
    // We need to simulate the 's_trap 2' instruction on targets that run in
-@@ -8007,8 +8009,7 @@ bool AMDGPULegalizerInfo::legalizeTrapHsa(MachineInstr &MI,
+@@ -7994,8 +7996,7 @@ bool AMDGPULegalizerInfo::legalizeTrapHsa(MachineInstr &MI,
  
    B.buildInstr(AMDGPU::S_TRAP)
        .addImm(static_cast<unsigned>(GCNSubtarget::TrapID::LLVMAMDHSATrap));
@@ -105,10 +129,10 @@ index 0305c789da6f..fcb58d68be3a 100644
                           MachineIRBuilder &B) const;
  
 diff --git a/llvm/lib/Target/AMDGPU/SIISelLowering.cpp b/llvm/lib/Target/AMDGPU/SIISelLowering.cpp
-index 4d06a4ffcdc8..708a93222d36 100644
+index 9fdb493e13b5..cb1f5e0648f2 100644
 --- a/llvm/lib/Target/AMDGPU/SIISelLowering.cpp
 +++ b/llvm/lib/Target/AMDGPU/SIISelLowering.cpp
-@@ -9293,6 +9293,11 @@ SDValue SITargetLowering::lowerXMUL_LOHI(SDValue Op, SelectionDAG &DAG) const {
+@@ -9256,6 +9256,11 @@ SDValue SITargetLowering::lowerXMUL_LOHI(SDValue Op, SelectionDAG &DAG) const {
    return Op;
  }
  
@@ -120,7 +144,7 @@ index 4d06a4ffcdc8..708a93222d36 100644
  SDValue SITargetLowering::lowerTRAP(SDValue Op, SelectionDAG &DAG) const {
    if (!Subtarget->hasTrapHandler() ||
        Subtarget->getTrapHandlerAbi() != GCNSubtarget::TrapHandlerAbi::AMDHSA)
-@@ -9355,7 +9360,8 @@ SDValue SITargetLowering::lowerTrapHsaQueuePtr(SDValue Op,
+@@ -9318,7 +9323,8 @@ SDValue SITargetLowering::lowerTrapHsaQueuePtr(SDValue Op,
    uint64_t TrapID = static_cast<uint64_t>(GCNSubtarget::TrapID::LLVMAMDHSATrap);
    SDValue Ops[] = {ToReg, DAG.getTargetConstant(TrapID, SL, MVT::i16), SGPR01,
                     ToReg.getValue(1)};
@@ -130,7 +154,7 @@ index 4d06a4ffcdc8..708a93222d36 100644
  }
  
  SDValue SITargetLowering::lowerTrapHsa(SDValue Op, SelectionDAG &DAG) const {
-@@ -9369,7 +9375,8 @@ SDValue SITargetLowering::lowerTrapHsa(SDValue Op, SelectionDAG &DAG) const {
+@@ -9332,7 +9338,8 @@ SDValue SITargetLowering::lowerTrapHsa(SDValue Op, SelectionDAG &DAG) const {
  
    uint64_t TrapID = static_cast<uint64_t>(GCNSubtarget::TrapID::LLVMAMDHSATrap);
    SDValue Ops[] = {Chain, DAG.getTargetConstant(TrapID, SL, MVT::i16)};
@@ -202,7 +226,7 @@ index 3318a308af95..fdfd2855b0cb 100644
    ret void
  }
 diff --git a/llvm/test/CodeGen/AMDGPU/GlobalISel/legalize-trap-gfx11.mir b/llvm/test/CodeGen/AMDGPU/GlobalISel/legalize-trap-gfx11.mir
-index aa86f1757942..ef1849a87d6f 100644
+index b35b2343036a..a11b3c2d6eb7 100644
 --- a/llvm/test/CodeGen/AMDGPU/GlobalISel/legalize-trap-gfx11.mir
 +++ b/llvm/test/CodeGen/AMDGPU/GlobalISel/legalize-trap-gfx11.mir
 @@ -40,11 +40,21 @@ body: |
@@ -841,5 +865,5 @@ index bab3d3bf861c..35cdb102d046 100644
  bb:
    %i10 = tail call i32 @llvm.amdgcn.workitem.id.x()
 -- 
-2.40.0
+2.43.0
 

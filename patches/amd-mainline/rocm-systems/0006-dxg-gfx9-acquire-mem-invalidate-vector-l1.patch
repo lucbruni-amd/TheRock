@@ -1,13 +1,29 @@
-From a5308f756bcd504531e4f1716fcbc42c82a1a564 Mon Sep 17 00:00:00 2001
+From 81809ea366eacf4bb2c9459df5ee90b10a9d372c Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
-Date: Thu, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] gfx9-win: dxg-gfx9-acquire-mem-invalidate-vector-l1
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] fix(rocr): invalidate the vector L1 in the gfx9 dxg
+ ACQUIRE_MEM
 
+The dxg thunk's gfx9 ACQUIRE_MEM only sets SH_KCACHE_VOL_ACTION_ENA. The
+vector L1 (TCP) is per CU and not coherent with other CUs, so a kernel can
+read stale lines left by an earlier kernel: wrong results, runaway kernels,
+engine-reset storms and one 0x10E bugcheck on gfx90c.
 
+Also set TC_ACTION_ENA, TCL1_ACTION_ENA and TC_WB_ACTION_ENA, matching the
+Linux kernel driver's gfx9 mem sync (gfx_v9_0_emit_mem_sync).
+
+Checked on gfx90c: 30-line repro; rocPRIM, rocThrust, hipFFT, hipDNN pass;
+hipSOLVER 11746/11746 (before: 8095 failures plus resets); hip-tests no
+regressions.
 ---
+ projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp
+index 11cd812f30..ae1bb3eaa6 100644
 --- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp
 +++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp
-@@ -120,7 +120,13 @@
+@@ -120,7 +120,13 @@ size_t CmdUtil::BuildAcquireMem(
      acq.acquire_mem.bitfields2.coher_cntl =
        (1 << 29) | // CP_COHER_CNTL__SH_ICACHE_ACTION_ENA_MASK
        (1 << 27) | // CP_COHER_CNTL__SH_KCACHE_ACTION_ENA_MASK
@@ -23,5 +39,5 @@ Subject: [PATCH] gfx9-win: dxg-gfx9-acquire-mem-invalidate-vector-l1
      ret = sizeof(acq);
    } else if (major >= 10) {
 -- 
-2.40.0
+2.43.0
 

@@ -6,6 +6,9 @@
 > defect. Scope/caveats: validated on gfx90c (one GCN5 client APU); runtime device-trap handler and
 > stream-wait are prototype/opt-in; broadening to other gfx9 Windows parts and upstream submission are
 > not yet done (nothing has been posted upstream).
+>
+> **2026-10-13:** re-validated at the current TheRock pins (carry, opt-in prototypes, refined fix 10;
+> CATALOG section 1b). Upstreaming is sequenced, closed-source wkmi first.
 
 Status snapshot for reporting. Local work only; nothing has been posted upstream. Detail lives in
 `upstream-patches/INDEX.md` (catalog), `CHANGE-IMPACT.md` (priority), `compare/ARCH-COMPARISON.md`,
@@ -24,7 +27,7 @@ at parity with supported architectures, except for independently-explained failu
 - **9 runtime fixes** (wkmi + rocm-systems dxg/CLR): GPU enumeration, kernel submit, queue-error
   reporting, legacy-KMD clocks, cache coherency (the big one), code-object/XNACK acceptance,
   exit-hang, async-alloc heap, and the PAL->ROCr fallback that makes gfx9 work without a manual env
-  var (fix 10, validated 2026-10-09).
+  var (fix 10, validated 2026-10-09; refined and re-validated at the current pin 2026-10-13).
 - **9 correctness fixes** (llvm-project + rocm-libraries + headers): device-libs dot math, LLP64
   64-bit-Windows wave64 bugs (headers + tests), three MIOpen fixes (grouped-conv, legacy-CK macro,
   MultiMarginLoss type), the device-assert message, and a safe device-trap fallback.

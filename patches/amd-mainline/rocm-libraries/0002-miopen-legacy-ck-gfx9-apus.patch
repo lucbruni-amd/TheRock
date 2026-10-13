@@ -1,10 +1,22 @@
-From e6b6e81fb889defa862d34ba8cb1869eb114f22d Mon Sep 17 00:00:00 2001
+From 3b15aecd47f8e6c82553a1da74812bc6d2a33629 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
-Date: Thu, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] gfx9-win: miopen-legacy-ck-gfx9-apus
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] fix(miopen): map gfx9 APUs to the gfx900 path in legacy CK
 
+The legacy composable_kernel config.hpp has no CK_AMD_GPU_GFX* case for
+gfx902, gfx909 or gfx90c and stops with "#error No CK_AMD_GPU_GFX* macro
+defined", so MIOpen's Reduce and RNN kernels fail to compile there.
 
+These APUs have the gfx900 feature set (no dot or fmac instructions), so
+define CK_AMD_GPU_GFX900 for them.
+
+Checked on gfx90c: Reduce/RNN 8/20 -> 20/20.
 ---
+ .../composable_kernel/include/utility/config.hpp            | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/projects/miopen/src/legacy_composable_kernel/composable_kernel/include/utility/config.hpp b/projects/miopen/src/legacy_composable_kernel/composable_kernel/include/utility/config.hpp
+index 7b5ff9c5775..33dab0d15c0 100644
 --- a/projects/miopen/src/legacy_composable_kernel/composable_kernel/include/utility/config.hpp
 +++ b/projects/miopen/src/legacy_composable_kernel/composable_kernel/include/utility/config.hpp
 @@ -4,6 +4,12 @@
@@ -21,5 +33,5 @@ Subject: [PATCH] gfx9-win: miopen-legacy-ck-gfx9-apus
  #include "hip/hip_runtime.h"
  #include "hip/hip_fp16.h"
 -- 
-2.40.0
+2.43.0
 

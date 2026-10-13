@@ -1,13 +1,23 @@
-From 7276d4d23ceeaa87028615da67b5b8eb5caa15f1 Mon Sep 17 00:00:00 2001
+From 995dcec96bcaafd4eba30a8506756e501eae0e7e Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
-Date: Thu, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] gfx9-win: rocprim-tests-gfx90X-windows-quick-partition
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] test(rocprim): keep large partition cases out of the gfx90X
+ Windows quick tier
 
-
+test_device_partition passes on gfx90c (85/85) but takes about 375 s against
+the 300 s quick-tier timeout. The 1 KiB-element cases move about 1 GiB per
+array through shared system memory and account for about 190 s. Exclude
+RocprimDevicePartitionTests/11.* from the quick tier on Windows gfx90X; they
+stay in the longer tiers.
 ---
+ projects/rocprim/test/test_categories.yaml | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/projects/rocprim/test/test_categories.yaml b/projects/rocprim/test/test_categories.yaml
+index 023e1abc5df..a7bd9acfdbc 100644
 --- a/projects/rocprim/test/test_categories.yaml
 +++ b/projects/rocprim/test/test_categories.yaml
-@@ -191,6 +191,17 @@
+@@ -191,6 +191,17 @@ exclude_gpu:
        - "comprehensive"
        - "ex_gpu_gfx1151"
  
@@ -26,5 +36,5 @@ Subject: [PATCH] gfx9-win: rocprim-tests-gfx90X-windows-quick-partition
    default_timeout: 300
    timeout_multiplier: 1 # Multiplier for all timeouts (1, 1.5, 1.75, 2, etc.)
 -- 
-2.40.0
+2.43.0
 

@@ -1,6 +1,10 @@
 # gfx9 on Windows (ROCr backend): every fix and change, in one place
 
-**STATUS 2026-10-09: ACHIEVED on gfx90c** (functional via ROCr; ~270k test executions, no unexplained gfx9 defect; prototype/opt-in items and upstream submission remain). Local package only. Nothing here has been posted anywhere.
+**STATUS 2026-10-09: ACHIEVED on gfx90c** (functional via ROCr; ~270k test executions, no unexplained gfx9 defect; prototype/opt-in items and upstream submission remain). **Re-validated 2026-10-13 at the current TheRock pins (section 1b).** Nothing here has been posted publicly; upstreaming is sequenced (wkmi first) and tracked internally.
+
+This branch is the source of truth for the code: every carried change is a patch under
+`patches/amd-mainline/` with an upstream-ready commit message (Conventional Commits title, why,
+evidence), and the opt-in prototypes are under `patches/gfx9-win-experimental/`.
 
 Per-change priority and "what breaks without it" live in `../CHANGE-IMPACT.md`.
 
@@ -10,8 +14,9 @@ driver 31.0.21925.1001 (kmd 2319). Controls: gfx1036 iGPU (same PM4-emulation qu
 gfx908 (Linux, official nightly). Every patch was checked to apply to the relevant `develop` /
 `amd-staging` branch on 2026-10-06/07 unless noted.
 
-Fix 10 (device.cpp PAL->ROCr fallback) is authored but NOT yet in any dllstash build; once built and
-tested it removes the need to set `GPU_ENABLE_PAL=0` by hand. Current recommended runtime: fixes
+Fix 10 (PAL->ROCr fallback) removes the need to set `GPU_ENABLE_PAL=0` by hand; validated in its
+first form on 2026-10-09 and in its refined form at the current pin on 2026-10-13 (section 1b).
+Historical recommended runtime at the 7.15 nightly pin: fixes
 1-4 + 6 (full) + 7 + 8 + 9, built at the nightly pin
 (dllstash `P2_final_vmm`, 48623BCC, which also contains P2 and the opt-in experimental changes);
 `P2_final_bp` (FF1DF124) adds the section 2c upstream backport (A8: 2585/25/335, no regressions).
@@ -39,6 +44,37 @@ cross-queue waits (section 7; 2 of them TheRock ignores on gfx110X).
 Also found while root-causing fix 11 (not patched): the thunk's `ROCR_VISIBLE_DEVICES` handling in
 `init_vars_from_env()` sets `default_node`, but topology init runs later and overwrites it with
 `numa_node_count_`, so that code never takes effect (and its comment's "+1" is not implemented).
+
+## 1b. Re-validation at the current pins (2026-10-13)
+
+The carry (`patches/amd-mainline/rocm-systems/` 0001-0012) and the opt-in patches were rebuilt on the
+gfx90c box against the rocm-systems pin of this branch (`6c654d4ff9`), with wkmi `bba4d03` (the wkmi
+that pin consumes; its interop `wkmi.h` is byte-identical) plus fixes 1 and 4. PAL off, flags as in
+TheRock `core/CMakeLists.txt`, toolchain 7.15.0a20260728. GPU tests run one at a time, one process per
+test.
+
+| check | A: carry | B: carry + opt-in 0001-0004 | C: carry, fix 10 refined |
+|---|---|---|---|
+| build | OK | OK (all 4 apply clean) | OK |
+| vadd canary, `GPU_ENABLE_PAL` unset / =0 | OK / OK | OK / OK | OK / OK |
+| `GPU_ENABLE_PAL=1` explicit | no device (respected) | not run | no device (respected) |
+| hipInfo | gfx90c, 8 CUs, 1000 / 1067 MHz | same | same |
+| CU mask probe, distinct CUs default / 0x1 / 0x3 | 8 / 8 / 8 | 8 / 1 / 2 | 8 / 8 / 8 |
+| `DXG_TRAP=1` | n/a | KMD refuses the escape, bound=0, runs clean | n/a |
+| 4 `hipMalloc[FromPool]Async_Basic_*` | crash (queue error) | 4/4 pass | |
+| `Unit_hipStreamWaitValue_Default` u32/u64 | 2 fail (watchdog) | 2/2 pass | |
+| 121 StreamTest cases except Wait_Blocking | 2 fail + the 2 above | the same 2 fail only | |
+
+- Fix 2 (0011): kernel dispatch works at the pin. Fix 3 (0012): the watchdog resets in A are reported
+  as a clean `HSA_STATUS_ERROR_EXCEPTION` (0x1016), no scratch misread, no access violation.
+- The 2 StreamTest failures in every state (`InChildProcess`, `TwoThreadsDiffOpSpt`) are open
+  (section 7).
+- Running several stream tests in one process gives misleading failures (negative tests leave a sticky
+  `hipGetLastError`); only per-process results count.
+- Fix 10's PAL-on branch cannot be built on the box (PAL is DVC-only); it is correct by inspection.
+- Not rerun at the pin: the full hip-tests suite (about 1.5 h; earlier full runs used 7.15).
+- Linux full build of this branch (gfx1201): rocminfo, vadd, a `__builtin_trap` kernel (clean
+  `HSA_STATUS_ERROR_EXCEPTION`), rocRAND 44/44, hipRAND 85/85.
 
 ## 2. Compiler, header, library and test fixes (correct results)
 
@@ -102,6 +138,8 @@ ROCr parts compile on Linux, the dxg parts have not been rebuilt since the rebas
   (clang treats `ROCM_PATH` as exclusive and TheRock keeps bitcode under `lib\llvm`).
 - Older source build: `image/blit_src/CMakeLists.txt` needs `--rocm-device-lib-path` appended;
   `hiprtc/CMakeLists.txt` `find_program` needs `${ROCM_PATH}/lib/llvm/bin` in HINTS (else VS clang).
+- Runtime build at the current pin (`pinval\buildpin.bat`): CLR also needs `projects/hrr` from the
+  same rocm-systems tree (for `hrr/hrr_api_args.h`) and `HIP_DEVICE_LIB_PATH` set.
 - hip-tests build: `-DHRR_CLR_DIR=<clr>/hipamd/src/hrr`, CMake 4.4.3 (3.31 fails on Catch2 with
   clang 23); hiprtc embeds headers twice, so rebuild both hiprtc DLLs after header fixes.
 - Device-libs validation: full standalone device-libs build (splicing ockl.bc does not work).
@@ -144,6 +182,13 @@ ROCr parts compile on Linux, the dxg parts have not been rebuilt since the rebas
   ~30 s (section 7).
 - `src44`: CPU-side stream wait prototype applied by chain7 (originals kept as `*.pre-hw`).
 - Defender exclusion added for `C:\Users\rocm\trape2e` (LLVM trap check).
+- 2026-10-13 re-validation: `C:\Users\rocm\pinval\` (sources `srcA/B/C` with a `drivers` junction to
+  `srcbuild\drivers`, `installA/B/C`, test dirs `tA/B/C`, scripts and logs; build dirs deleted) and a
+  Defender exclusion for it. Restore: `Remove-MpPreference -ExclusionPath C:\Users\rocm\pinval`, then
+  delete the folder. Disk C: has about 3.4 GB free.
+- The `rk90c\bin` and `cmpA2\catch_tests` `amdhip64_7.dll` hashes recorded above were not reproduced
+  on 2026-10-13 (both read 34E653A2; possibly a different hash method). Re-check before relying on
+  them.
 
 ## 7. Open items (not fixed yet)
 
@@ -164,12 +209,13 @@ ROCr parts compile on Linux, the dxg parts have not been rebuilt since the rebas
   scheduling, DMA-level preemption) wedged it. With `TdrDelay=10` + `LIT_OPTS=-j8` the suite completes (90 min) but ~9 s bitset kernels running together still push 32 tests past their limits; about 30 s of watchdog and 4 workers is the safe setting.
 - A gfx9 Windows runner needs `GPU_ENABLE_PAL=0`: `test_component.yml` defaults Windows to PAL, and
   so does the runtime itself (`device.cpp` forces `GPU_ENABLE_PAL=1` on Windows when unset). PAL
-  has no gfx9, so end users must set it too. NOW ADDRESSED by fix 10 (section 1,
-  `clr-windows-pal-fallback-to-rocr-when-no-device.patch`): the runtime falls back to ROCr when the
-  Windows-default PAL path finds no device, so gfx9 works without the env var. Authored; rebuild+test
-  pending (queued after the gfx90c rocSOLVER gap run). `test_component.yml` still defaults Windows
+  has no gfx9, so end users must set it too. ADDRESSED by fix 10 (section 1, patch 0004): the runtime
+  falls back to ROCr when the Windows-default PAL path finds no device, so gfx9 works without the env
+  var (validated at the current pin, section 1b). `test_component.yml` still defaults Windows
   jobs to PAL, so the CI-side default is a separate (not-yet-made) change if a gfx9 Windows runner is
   added.
+- `StreamTest InChildProcess` and `TwoThreadsDiffOpSpt` fail on gfx90c at the current pin, with and
+  without the opt-in patches (section 1b). Not root-caused yet.
 - hipBLASLt has no gfx90c (or gfx900/906/101X/103X) kernels by design (TheRock#1062); only the CI
   job selection needed fixing (section 2b).
 
@@ -200,13 +246,17 @@ Never use `C3_p3` (routes a queue to the VR node, which hard-hung the box).
 
 ## 9. Upstream grouping and drift check (re-verified 2026-10-08 against current upstream)
 
-Nothing is posted; this is the map for when the work is cleared to submit. Dry-run `git apply --check`
-against each repo's current tip.
+Nothing is posted publicly. Since 2026-10-13: fixes 2 and 3 are carried (0011, 0012); fixes 7 and 10
+were re-checked against rocm-systems `develop` `1f343ae3dc` and apply clean (fix 10 refined, section
+1). Order of submission: wkmi (fixes 1, 4) first, internally; then enumeration (7, 10), dispatch (2,
+3), correctness, gfx9 robustness and opt-in, and last the changes that are not gfx9-specific. Fix 11
+(multi-adapter host memory) stays in this carry only. Dry-run `git apply --check` against each repo's
+current tip.
 
 | upstream repo (target) | patches | drift today |
 |---|---|---|
 | AMD-ROCm-Internal/wkmi | fixes 1+4 (`../rebased/wkmi-331b1985-gfx9-fixes-1-4.patch`): FAMILY_AI/RV table, legacy-KMD clocks | internal repo, not re-checked here |
-| ROCm/rocm-systems `develop` (f36c15d) | dxg: fixes 2+3 (`../rebased/rocm-systems-44be71b5-gfx9-fixes-2-3.patch`), fix 6 (cmd_util); CLR: fix 7, 8, 9, 10 (device.cpp PAL->ROCr fallback); CLR public headers: llp64 + device-assert; hip-tests: warp-reduce llp64 | all CLEAN except fix 9 = applies with offset+fuzz (re-check #7988 still live), stream-wait prototype = 4 hunks need rebase (rocvirtual drifted); fix 10 authored against 44be71b5, re-check offset vs device.cpp tip |
+| ROCm/rocm-systems `develop` (f36c15d) | dxg: fixes 2+3 (now carry 0011, 0012), fix 6 (cmd_util); CLR: fix 7, 8, 9, 10 (device.cpp PAL->ROCr fallback); CLR public headers: llp64 + device-assert; hip-tests: warp-reduce llp64 | all CLEAN except fix 9 = applies with offset+fuzz (re-check #7988 still live), stream-wait prototype = 4 hunks need rebase (rocvirtual drifted); fix 10 authored against 44be71b5, re-check offset vs device.cpp tip |
 | ROCm/rocm-libraries `develop` (ade4d37) | MIOpen: multimarginloss, legacy-ck, tests-uncharacterized-arch, fused-conv-grouped; rocPRIM: test_categories gfx90X | all CLEAN (hipTensor already upstream, #10712) |
 | ROCm/llvm-project `amd-staging` (f95f066) | AMDGPU trap-endpgm fallback; device-libs dots/fdot2 | both CLEAN (the GlobalISel form only differs on TheRock's *older* amd-llvm pin, not on amd-staging) |
 | ROCm/TheRock `main` (2fb7b81) | CI: skip-hipblaslt-unsupported-families, prefer-artifact-dlls-over-system32 | both CLEAN |

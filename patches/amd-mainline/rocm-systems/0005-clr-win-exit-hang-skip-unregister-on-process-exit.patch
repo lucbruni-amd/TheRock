@@ -1,14 +1,30 @@
-From 1eea3870ccf38bbad9476f1703d144f548be1086 Mon Sep 17 00:00:00 2001
+From 5c4542944d8a27f3890876c2f6ee586be68bab54 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
-Date: Thu, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] gfx9-win: clr-win-exit-hang-skip-unregister-on-process-exit
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] fix(clr): do not wait for the GPU while a Windows process
+ exits
 
+During ExitProcess, Windows terminates every other thread before it runs
+DLL_PROCESS_DETACH and the CRT atexit callbacks of the DLLs being unloaded.
+Work in flight on ROCr's PM4-emulation queues is completed by those threads,
+so __hipUnregisterFatBinary draining the streams waits forever: a process
+with a HIP DLL hangs at exit if GPU work is in flight.
 
+Detect process exit and skip the GPU work in that path; the OS reclaims
+everything.
+
+Affects the Windows ROCr PM4 path: gfx9 and RDNA2 (also on the official
+nightly). Reproduced and fixed on gfx90c and gfx1036.
 ---
+ projects/clr/hipamd/src/hip_platform.cpp | 10 ++++++++++
+ projects/clr/hipamd/src/hip_runtime.cpp  | 10 ++++++++++
+ 2 files changed, 20 insertions(+)
+
 diff --git a/projects/clr/hipamd/src/hip_platform.cpp b/projects/clr/hipamd/src/hip_platform.cpp
+index 4641de3bc4..4079aad90f 100644
 --- a/projects/clr/hipamd/src/hip_platform.cpp
 +++ b/projects/clr/hipamd/src/hip_platform.cpp
-@@ -296,7 +296,17 @@
+@@ -331,7 +331,17 @@ void __hipRegisterTexture(
  }
  
  // ================================================================================================
@@ -27,6 +43,7 @@ diff --git a/projects/clr/hipamd/src/hip_platform.cpp b/projects/clr/hipamd/src/
    static std::once_flag unregister_device_sync;
    // If SKIP ABORT is set and GPU is in error, dont need to sync streams.
 diff --git a/projects/clr/hipamd/src/hip_runtime.cpp b/projects/clr/hipamd/src/hip_runtime.cpp
+index 6a37880ea3..a5341e0da2 100644
 --- a/projects/clr/hipamd/src/hip_runtime.cpp
 +++ b/projects/clr/hipamd/src/hip_runtime.cpp
 @@ -13,6 +13,16 @@
@@ -47,5 +64,5 @@ diff --git a/projects/clr/hipamd/src/hip_runtime.cpp b/projects/clr/hipamd/src/h
  
  #ifdef DEBUG
 -- 
-2.40.0
+2.43.0
 

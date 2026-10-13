@@ -1,7 +1,7 @@
-From 9be4992fb2bbd64d3d2766284ecc944dcc34e617 Mon Sep 17 00:00:00 2001
+From 1ecc44e6a22b393cc37ec0bb1874a96792db53bf Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Tue, 13 Oct 2026 11:52:09 -0400
-Subject: [PATCH] gfx9-win: rocr-dxg-map-system-memory-to-peer-adapters
+Subject: [PATCH] fix(rocr): map dxg host memory into every GPU adapter
 
 ROCr on Windows hangs on the first operation of every GPU except the first
 enumerated one (e.g. RX 9070 XT next to a Ryzen gfx1036 iGPU).

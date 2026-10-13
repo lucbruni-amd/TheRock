@@ -1,13 +1,27 @@
-From a81708d9ab831ba5acb70eccce83bad5b465e10a Mon Sep 17 00:00:00 2001
+From 9ca8ddfb5aaf98b10cfcce0aa52e4efe2015c9f2 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
-Date: Thu, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] gfx9-win: clr-isa-gfx9-client-apus-xnack-unsupported
+Date: Tue, 13 Oct 2026 16:29:16 -0400
+Subject: [PATCH] fix(clr): mark gfx902/gfx909/gfx90c as XNACK-unsupported in
+ the ISA table
 
+ROCr runs the gfx9 client APUs XNACK-off (#2669 for gfx90c, #8237 for
+gfx902/gfx909): it registers them as XNACK-unsupported with only the neutral
+and :xnack- target ids. CLR's ISA table still lists them as XNACK ANY with
+:xnack- (OFF) and :xnack+ (ON) variants, so the agent's ISA never matches a
+code object built for :xnack- and every such code object (for example the
+MIOpen assembly kernels) is rejected with "no kernel image is available".
 
+Mark gfx902, gfx909 and gfx90c XNACK-unsupported (NONE) for both the neutral
+and :xnack- names and drop the :xnack+ variants, matching ROCr.
 ---
+ projects/clr/rocclr/device/device.cpp | 17 ++++++++---------
+ 1 file changed, 8 insertions(+), 9 deletions(-)
+
+diff --git a/projects/clr/rocclr/device/device.cpp b/projects/clr/rocclr/device/device.cpp
+index 2984751398..fe54362813 100644
 --- a/projects/clr/rocclr/device/device.cpp
 +++ b/projects/clr/rocclr/device/device.cpp
-@@ -118,9 +118,10 @@
+@@ -118,9 +118,10 @@ std::pair<const Isa*, const Isa*> Isa::supportedIsas() {
        {"gfx900", true, true, 9, 0, 0, NONE, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
        {"gfx900:xnack-", true, true, 9, 0, 0, NONE, OFF, 4, 16, 1, 256, 64 * Ki, 32, 512},
        {"gfx900:xnack+", true, true, 9, 0, 0, NONE, ON, 4, 16, 1, 256, 64 * Ki, 32, 512},
@@ -15,13 +29,13 @@ Subject: [PATCH] gfx9-win: clr-isa-gfx9-client-apus-xnack-unsupported
 -      {"gfx902:xnack-", true, true, 9, 0, 2, NONE, OFF, 4, 16, 1, 256, 64 * Ki, 32, 512},
 -      {"gfx902:xnack+", true, true, 9, 0, 2, NONE, ON, 4, 16, 1, 256, 64 * Ki, 32, 512},
 +      // gfx9 client APUs run XNACK-off: ROCr reports the neutral target id and accepts :xnack-
-+      // code objects (rocm-systems #8237), so treat both names as "xnack unsupported" here too.
++      // code objects (#2669, #8237), so treat both names as "xnack unsupported" here too.
 +      {"gfx902", true, true, 9, 0, 2, NONE, NONE, 4, 16, 1, 256, 64 * Ki, 32, 512},
 +      {"gfx902:xnack-", true, true, 9, 0, 2, NONE, NONE, 4, 16, 1, 256, 64 * Ki, 32, 512},
        {"gfx904", true, true, 9, 0, 4, NONE, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
        {"gfx904:xnack-", true, true, 9, 0, 4, NONE, OFF, 4, 16, 1, 256, 64 * Ki, 32, 512},
        {"gfx904:xnack+", true, true, 9, 0, 4, NONE, ON, 4, 16, 1, 256, 64 * Ki, 32, 512},
-@@ -147,9 +148,8 @@
+@@ -147,9 +148,8 @@ std::pair<const Isa*, const Isa*> Isa::supportedIsas() {
        {"gfx908:sramecc+:xnack-", true, false, 9, 0, 8, ON, OFF, 4, 16, 1, 256, 64 * Ki,
         32, 512},
        {"gfx908:sramecc+:xnack+", true, false, 9, 0, 8, ON, ON, 4, 16, 1, 256, 64 * Ki, 32, 512},
@@ -33,7 +47,7 @@ Subject: [PATCH] gfx9-win: clr-isa-gfx9-client-apus-xnack-unsupported
        {"gfx90a", true, false, 9, 0, 10, ANY, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
        {"gfx90a:sramecc-", true, false, 9, 0, 10, OFF, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
        {"gfx90a:sramecc+", true, false, 9, 0, 10, ON, ANY, 4, 16, 1, 256, 64 * Ki, 32, 512},
-@@ -175,9 +175,8 @@
+@@ -175,9 +175,8 @@ std::pair<const Isa*, const Isa*> Isa::supportedIsas() {
        {"gfx942:sramecc+:xnack-", true, false, 9, 4, 2, ON, OFF, 4, 16, 1, 256, 64 * Ki,
         32, 512},
        {"gfx942:sramecc+:xnack+", true, false, 9, 4, 2, ON, ON, 4, 16, 1, 256, 64 * Ki, 32, 512},
@@ -46,5 +60,5 @@ Subject: [PATCH] gfx9-win: clr-isa-gfx9-client-apus-xnack-unsupported
        {"gfx950:sramecc-", true, false, 9, 5, 0, OFF, ANY, 4, 16, 1, 256, 160 * Ki, 64, 1280},
        {"gfx950:sramecc+", true, false, 9, 5, 0, ON, ANY, 4, 16, 1, 256, 160 * Ki, 64, 1280},
 -- 
-2.40.0
+2.43.0
 

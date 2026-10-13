@@ -1,4 +1,4 @@
-From 915918e0108ba987ae3a69453d312ef6127751b3 Mon Sep 17 00:00:00 2001
+From 69f13a477c648768fef73f61c264d0bb474b2a8d Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Tue, 13 Oct 2026 16:30:49 -0400
 Subject: [PATCH] fix(clr): use ROCr on Windows when the default PAL backend
@@ -22,7 +22,7 @@ backend at all. Use ROCr by default instead. Leaving the flag at its default
  1 file changed, 29 insertions(+)
 
 diff --git a/projects/clr/rocclr/device/device.cpp b/projects/clr/rocclr/device/device.cpp
-index 50175986ce..c7883971df 100644
+index fe54362813..18727002e0 100644
 --- a/projects/clr/rocclr/device/device.cpp
 +++ b/projects/clr/rocclr/device/device.cpp
 @@ -841,6 +841,8 @@ bool Device::init() {
