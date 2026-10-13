@@ -1,0 +1,164 @@
+From 9be4992fb2bbd64d3d2766284ecc944dcc34e617 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Tue, 13 Oct 2026 11:52:09 -0400
+Subject: [PATCH] gfx9-win: rocr-dxg-map-system-memory-to-peer-adapters
+
+ROCr on Windows hangs on the first operation of every GPU except the first
+enumerated one (e.g. RX 9070 XT next to a Ryzen gfx1036 iGPU).
+
+Host (CPU-node) allocations are created on a single WDDM device,
+dxg_runtime->default_node, which topology init fixes to the first GPU
+adapter. ROCr then maps every system-region allocation to all GPU agents via
+hsaKmtMapMemoryToGPUNodes, but for non-userptr allocations that call just
+returned success. WDDM allocations only exist in the VA space of the adapter
+that created them, so every other GPU received kernarg, staging, and host-pool
+pointers that were unmapped on its adapter and hung on first use (DXG treats
+the map as best-effort, so no error surfaced).
+
+It went unnoticed while ROCr exposed one adapter. The 2026-07-10 wkmi update
+(rocm-systems 5190f14b56) made gfx103X APUs enumerate under ROCr, which put the
+iGPU first and broke the dGPU (bisected: 7.15.0a20260711 good, 7.15.0a20260713
+bad).
+
+The SVM range is already reserved at the same base on every adapter
+(ReserveSvmSpace), and kSystem allocations are created over committed CPU pages
+(pSystemMem). So for each additional requested node, create a mirror allocation
+on that adapter over the same pages, map it at the same SVM address, and make
+it resident. Mirrors are owned by the allocation and freed with it; they never
+free the VA or decommit the pages.
+
+Validated on gfx1036 + gfx1201 (Win11 26200): each GPU alone, both GPUs in one
+process including a cross-device copy through pinned host memory, both
+host-memory ownership orders, and a 300-iteration host alloc/use/free stress on
+both GPUs (0 mismatches). No change on a single-GPU gfx1100 system.
+---
+ .../libhsakmt/include/impl/wddm/gpu_memory.h  | 11 +++++
+ .../rocr-runtime/libhsakmt/src/dxg/memory.cpp | 11 +++++
+ .../libhsakmt/src/dxg/wddm/gpu_memory.cpp     | 43 +++++++++++++++++++
+ 3 files changed, 65 insertions(+)
+
+diff --git a/projects/rocr-runtime/libhsakmt/include/impl/wddm/gpu_memory.h b/projects/rocr-runtime/libhsakmt/include/impl/wddm/gpu_memory.h
+index 9cafa05877..50fb619eb6 100644
+--- a/projects/rocr-runtime/libhsakmt/include/impl/wddm/gpu_memory.h
++++ b/projects/rocr-runtime/libhsakmt/include/impl/wddm/gpu_memory.h
+@@ -44,6 +44,7 @@
+ 
+ #include <cstddef>
+ #include <cstdint>
++#include <vector>
+ #include "util/utils.h"
+ #include "impl/wddm/types.h"
+ #include "impl/wddm/thunks.h"
+@@ -270,6 +271,11 @@ public:
+   ErrorCode CreatePhysicalMemory();
+   ErrorCode FreePhysicalMemory();
+ 
++  // Make a kSystem allocation usable from another adapter. WDDM allocations live in the
++  // VA space of the device that created them, so a peer adapter gets its own allocation
++  // over the same CPU pages, mapped at the same SVM address (reserved on every adapter).
++  ErrorCode MapToPeerDevice(WDDMDevice* peer);
++
+   ErrorCode OpenResourceFromKMTHandle(D3DKMT_HANDLE buffer_handle, D3DKMT_HANDLE device_handle,
+                                       D3DKMT_OPENRESOURCE** out_open_resource);
+   ErrorCode OpenResourceFromNTHandle(HANDLE buffer_handle, D3DKMT_HANDLE device_handle,
+@@ -306,6 +312,11 @@ private:
+   bool is_phymem_created = false; // status of physical memory allocation
+   bool is_sysmem_locked_ = false; // kSystem allocation pinned via D3DKMTLock2
+ 
++  // Peer-adapter mirrors of this kSystem allocation (see MapToPeerDevice). A mirror shares
++  // the owner's CPU pages and SVM address, so it must not free the VA or decommit pages.
++  std::vector<GpuMemory*> peer_mirrors_;
++  bool is_peer_mirror_ = false;
++
+   // Number of outstanding GPU mappings of a user pointer.
+   uint32_t mapping_count_ = 1;
+   HsaWddmSurfaceMetadata surface_metadata_{}; // stable storage for swizzle metadata blob
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/memory.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/memory.cpp
+index f0cc346e0d..f8e149685d 100644
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/memory.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/memory.cpp
+@@ -867,6 +867,17 @@ HSAKMT_STATUS HSAKMTAPI hsaKmtMapMemoryToGPUNodes(
+         gpu_mem->MapMemoryToVirtualAddress();
+       }
+       if (!it->userptr) {
++        // System memory is created on one adapter (default_node), but ROCr maps it to every
++        // GPU agent. Mirror it onto each other requested adapter, otherwise those GPUs get a
++        // VA that is not mapped in their address space and hang on first use.
++        if (gpu_mem->IsSystem() && NodeArray != nullptr) {
++          for (HSAuint64 n = 0; n < NumberOfNodes; n++) {
++            wsl::thunk::WDDMDevice *peer = get_wddmdev(NodeArray[n]);
++            if (peer != nullptr && peer != gpu_mem->GetDevice() &&
++                gpu_mem->MapToPeerDevice(peer) != ErrorCode::Success)
++              return HSAKMT_STATUS_ERROR;
++          }
++        }
+       // GTT/Local mem
+         if (it->size >= MemorySizeInBytes) {
+           *AlternateVAGPU = (uint64_t)MemoryAddress;
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/gpu_memory.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/gpu_memory.cpp
+index f048356e86..56e6e8ad33 100644
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/gpu_memory.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/gpu_memory.cpp
+@@ -54,9 +54,19 @@ GpuMemory::GpuMemory(WDDMDevice *device) : device_(device) {
+ }
+ 
+ GpuMemory::~GpuMemory() {
++  // Peer mirrors reference this allocation's pages and VA; drop them first.
++  for (auto* mirror : peer_mirrors_) delete mirror;
++  peer_mirrors_.clear();
++
+   // Release the Lock2 pin before tearing down the allocation handles, since
+   // DestroyAllocation invalidates the handles Unlock2 needs.
+   UnlockSystemMemory();
++  if (is_peer_mirror_) {
++    // The owner holds the SVM VA and the committed pages; only release this adapter's view.
++    UnmapGpuVirtualAddress(GpuAddress(), Size());
++    FreePhysicalMemory();
++    return;
++  }
+   FreeGpuVirtualAddress(GpuAddress(), Size());
+   FreePhysicalMemory();
+   if (desc_.handle_ape_addr > 0)
+@@ -513,6 +523,39 @@ ErrorCode GpuMemory::UnlockSystemMemory() {
+   return final_code;
+ }
+ 
++ErrorCode GpuMemory::MapToPeerDevice(WDDMDevice* peer) {
++  if (peer == nullptr || peer == device_ || !IsSystem() || is_peer_mirror_)
++    return ErrorCode::Success;
++  for (const auto* mirror : peer_mirrors_)
++    if (mirror->GetDevice() == peer) return ErrorCode::Success;
++
++  // Same CPU pages (pSystemMem) and the same SVM address; ReserveSvmSpace() already
++  // reserved this VA range on every adapter, so no new VA is allocated here.
++  auto* mirror = new GpuMemory(peer);
++  mirror->desc_ = desc_;
++  mirror->desc_.adapter_luid = peer->GetLuid();
++  mirror->desc_.flags.is_shared = false;
++  mirror->is_peer_mirror_ = true;
++  mirror->num_allocations_ = num_allocations_;
++  if (num_allocations_ > 1) mirror->alloc_handles_ptr_ = new WinAllocationHandle[num_allocations_];
++  memset(mirror->alloc_handles_ptr_, 0, num_allocations_ * sizeof(WinAllocationHandle));
++
++  auto code = mirror->CreatePhysicalMemory();
++  if (code == ErrorCode::Success) code = mirror->MapGpuVirtualAddress(GpuAddress(), Size());
++  if (code == ErrorCode::Success) code = mirror->MakeResident();
++  // The owner's Lock2 already pins these pages; pinning through the peer is best-effort.
++  if (code == ErrorCode::Success && is_sysmem_locked_) (void)mirror->LockSystemMemory();
++  if (code == ErrorCode::Success && !peer->WaitOnPagingFenceFromCpu()) code = ErrorCode::Unknown;
++  if (code != ErrorCode::Success) {
++    pr_err("failed to map system allocation %#" PRIx64 " (size %" PRIu64 ") to peer adapter, code=%d\n",
++           static_cast<uint64_t>(GpuAddress()), static_cast<uint64_t>(Size()), static_cast<int>(code));
++    delete mirror;
++    return code;
++  }
++  peer_mirrors_.push_back(mirror);
++  return ErrorCode::Success;
++}
++
+ ErrorCode GpuMemory::Evict() {
+ 
+   D3DKMT_EVICT args = {};
+-- 
+2.43.0
+
