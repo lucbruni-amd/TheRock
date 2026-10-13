@@ -1,0 +1,38 @@
+From 50d6f5bb18986a544863d495a6d36c9cdedc8d48 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Tue, 13 Oct 2026 16:18:01 -0400
+Subject: [PATCH] gfx9-win: rocr-dxg-gfx9-umd-allocated-user-queue
+
+Every kernel submit on gfx9 under Windows ROCr fails with
+STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE (0xc01e0200).
+
+AllocUserQueueMemFromUMD() returns true only for major == 10. gfx9 also uses
+legacy HWS and has no MES, exactly like gfx10, so the UMD must allocate the
+user queue there too. Without it the SW/PM4 queue path passes
+hUQAllocation=0 and the KMD rejects the submit.
+
+Return true for major 9 as well.
+---
+ projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h b/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
+index 159a080533..ef5e010cc8 100644
+--- a/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
++++ b/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
+@@ -225,7 +225,11 @@ public:
+   bool AllocUserQueueMemFromUMD(void) const {
+     // stage 1 HWS queue memory is allocated by KMD.
+     // GFX10 uses legacy HWS. UMD allocates user queue.
+-    return (device_info_.major == 10);
++    // gfx9 also uses legacy HWS and has no MES, exactly like gfx10, so the UMD must
++    // allocate the user queue here too. Without this the SW/PM4 queue path passes
++    // hUQAllocation=0 and the KMD rejects every submit with
++    // STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE (0xc01e0200).
++    return (device_info_.major == 9 || device_info_.major == 10);
+   }
+ 
+   bool IsHwsEnabled(int engine) {
+-- 
+2.43.0
+

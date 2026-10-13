@@ -1,0 +1,137 @@
+From 37067abeb43ff4c8eb0e3198df68d174b7aee64c Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Tue, 13 Oct 2026 16:20:43 -0400
+Subject: [PATCH] gfx9-win: EXPERIMENTAL dxg-pm4-honor-cu-mask
+
+Opt-in prototype, not for upstream as is.
+
+On emulated (PM4) queues there is no CP-managed queue descriptor, so
+WDDMQueue::SetCuMask() returned success without doing anything and every CU
+mask (hipExtStreamCreateWithCUMask, HSA_CU_MASK, green/execution contexts) was
+silently ignored. Keep the mask on the queue, spread it over
+COMPUTE_STATIC_THREAD_MGMT_SE0-3 the way KFD's mqd_symmetrically_map_cu_mask
+does, and program it with every dispatch.
+
+Validated at the 7.15 nightly pin on gfx90c: __smid() probe 8/8 -> 1/2 CUs;
+68 related hip-tests unchanged. Rebased onto the current pin (queue.h gained
+CWSR members; context only). Not rebuilt or retested after the rebase.
+---
+ .../libhsakmt/include/impl/wddm/cmd_util.h    |  1 +
+ .../libhsakmt/include/impl/wddm/queue.h       |  2 +
+ .../libhsakmt/src/dxg/wddm/cmd_util.cpp       |  8 ++--
+ .../libhsakmt/src/dxg/wddm/queue.cpp          | 39 ++++++++++++++++++-
+ 4 files changed, 44 insertions(+), 6 deletions(-)
+
+diff --git a/projects/rocr-runtime/libhsakmt/include/impl/wddm/cmd_util.h b/projects/rocr-runtime/libhsakmt/include/impl/wddm/cmd_util.h
+index 3c2b49562c..73fc5e4a30 100644
+--- a/projects/rocr-runtime/libhsakmt/include/impl/wddm/cmd_util.h
++++ b/projects/rocr-runtime/libhsakmt/include/impl/wddm/cmd_util.h
+@@ -30,6 +30,7 @@ struct DispatchInfo {
+   uint32_t                      scratchBaseOffset[2];
+   uint32_t                      offsetCnt;
+   uint32_t                      packetIndex;
++  const uint32_t                *pSeMask;
+ };
+ 
+ class CmdUtil {
+diff --git a/projects/rocr-runtime/libhsakmt/include/impl/wddm/queue.h b/projects/rocr-runtime/libhsakmt/include/impl/wddm/queue.h
+index 1691a67eb2..844eb1030b 100644
+--- a/projects/rocr-runtime/libhsakmt/include/impl/wddm/queue.h
++++ b/projects/rocr-runtime/libhsakmt/include/impl/wddm/queue.h
+@@ -144,6 +144,8 @@ public:
+   std::atomic<uint64_t>* ring_rptr = nullptr;
+ 
+   uint32_t aql_doorbell_offset_ = 0; //!< Doorbell offset for this AQL queue
++  //! COMPUTE_STATIC_THREAD_MGMT_SE0-3 for emulated queues (the thunk plays the CP's role).
++  uint32_t se_mask_[4] = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+ 
+   bool needs_cwsr_ = true;                        //!< false for SDMA queues (mirrors Linux handle_concrete_asic() SDMA early-return)
+   GpuMemoryHandle cwsr_mem_ = nullptr;           //!< CWSR (Context Wave Save/Restore) memory allocation
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp
+index ae1bb3eaa6..1e743bbb0d 100644
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp
+@@ -220,10 +220,10 @@ size_t CmdUtil::BuildDispatch(
+ 
+   GenerateSetShRegHeader(&dispatch.resource_regs, mmCOMPUTE_RESOURCE_LIMITS);
+   dispatch.resource_regs.compute_resource_limits = 0x3ff;
+-  dispatch.resource_regs.compute_static_thread_mgmt_se0 = 0xFFFFFFFF;
+-  dispatch.resource_regs.compute_static_thread_mgmt_se1 = 0xFFFFFFFF;
+-  dispatch.resource_regs.compute_static_thread_mgmt_se2 = 0xFFFFFFFF;
+-  dispatch.resource_regs.compute_static_thread_mgmt_se3 = 0xFFFFFFFF;
++  dispatch.resource_regs.compute_static_thread_mgmt_se0 = pInfo->pSeMask[0];
++  dispatch.resource_regs.compute_static_thread_mgmt_se1 = pInfo->pSeMask[1];
++  dispatch.resource_regs.compute_static_thread_mgmt_se2 = pInfo->pSeMask[2];
++  dispatch.resource_regs.compute_static_thread_mgmt_se3 = pInfo->pSeMask[3];
+ 
+   dispatch.resource_regs.compute_tmpring_size = pInfo->pAmdQueue->compute_tmpring_size;
+ 
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
+index d8ffeaf6e0..7ef09895e3 100644
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
+@@ -40,6 +40,7 @@
+ //
+ ////////////////////////////////////////////////////////////////////////////////
+ 
++#include <algorithm>
+ #include <cstring>
+ #include <cinttypes>
+ #include <cstddef>
+@@ -167,10 +168,43 @@ hsa_status_t WDDMQueue::SetPriority(hsa_amd_queue_priority_t priority) {
+   return HwsInit();
+ }
+ 
++// ================================================================================================
++// Spread an HSA CU mask over COMPUTE_STATIC_THREAD_MGMT_SE0-3 the way KFD's
++// mqd_symmetrically_map_cu_mask does: mask bits walk the SEs first, then the SHs, then the CUs;
++// each SE register holds SH0 in bits 0-15 and SH1 in bits 16-31; gfx10+ enables CUs in WGP pairs.
++static void MapCuMaskToSeMask(WDDMDevice* device, uint32_t cu_mask_count,
++                              const uint32_t* cu_mask, uint32_t se_mask[4]) {
++  const uint32_t num_se = device->NumShaderEngine();
++  const uint32_t sh_per_se = device->ShaderArrayPerShaderEngine();
++  if (num_se == 0 || num_se > 4 || sh_per_se == 0 || sh_per_se > 2) return;
++  const uint32_t cu_per_sh = device->ComputeUnitCount() / (num_se * sh_per_se);
++  const bool wgp_mode = device->Major() >= 10;
++  const uint32_t en_mask = wgp_mode ? 0x3 : 0x1;
++  const uint32_t cu_inc = wgp_mode ? 2 : 1;
++  cu_mask_count = std::min(cu_mask_count, device->ComputeUnitCount());
++
++  for (uint32_t se = 0; se < 4; se++) se_mask[se] = 0;
++  uint32_t i = 0;
++  for (uint32_t cu = 0; cu < 16 && cu < cu_per_sh; cu += cu_inc) {
++    for (uint32_t sh = 0; sh < sh_per_se; sh++) {
++      for (uint32_t se = 0; se < num_se; se++) {
++        if (cu_mask[i / 32] & (en_mask << (i % 32))) se_mask[se] |= en_mask << (cu + sh * 16);
++        i += cu_inc;
++        if (i >= cu_mask_count) return;
++      }
++    }
++  }
++}
++
+ // ================================================================================================
+ hsa_status_t WDDMQueue::SetCuMask(uint32_t cu_mask_count, const uint32_t* queue_cu_mask) {
+-  if ((aql_doorbell_offset_ == 0) ||
+-      device->SetCuMask(aql_doorbell_offset_, cu_mask_count, queue_cu_mask)) {
++  if (aql_doorbell_offset_ == 0) {
++    // Emulated queue: there is no CP-managed queue descriptor to update, so keep the mask and
++    // program it with every dispatch (CmdUtil::BuildDispatch).
++    MapCuMaskToSeMask(device, cu_mask_count, queue_cu_mask, se_mask_);
++    return HSA_STATUS_SUCCESS;
++  }
++  if (device->SetCuMask(aql_doorbell_offset_, cu_mask_count, queue_cu_mask)) {
+     return HSA_STATUS_SUCCESS;
+   } else {
+     return HSA_STATUS_ERROR;
+@@ -755,6 +789,7 @@ hsa_status_t ComputeQueue::KernelDispatchAqlToPm4(char* cpu, hsa_kernel_dispatch
+   info.scratchSizePerWave = ScratchSizePerWave();
+   memset(info.scratchBaseOffset, 0, sizeof(info.scratchBaseOffset));
+   info.offsetCnt = 0;
++  info.pSeMask = se_mask_;
+   info.packetIndex = (reinterpret_cast<uint64_t>(packet) -
+                       reinterpret_cast<uint64_t>(amd_queue_rocr_->hsa_queue.base_address)) /
+       64;
+-- 
+2.43.0
+

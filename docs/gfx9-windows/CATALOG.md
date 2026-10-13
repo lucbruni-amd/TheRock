@@ -25,8 +25,8 @@ cross-queue waits (section 7; 2 of them TheRock ignores on gfx110X).
 | # | patch | repo / file | what it fixes | scope | validated |
 |---|---|---|---|---|---|
 | 1 | `../rebased/wkmi-331b1985-gfx9-fixes-1-4.patch` | AMD-ROCm-Internal/wkmi `wkmi.cpp` | `DetectGfxIpVersion` has no FAMILY_AI / FAMILY_RV entries, so no gfx9 GPU is enumerated ("No WDDM adapters found", hipInfo "no ROCm-capable device") | gfx9 Windows | gfx90c enumerates; hip-tests A3-A6 |
-| 2 | `../rebased/rocm-systems-44be71b5-gfx9-fixes-2-3.patch` | rocm-systems dxg `device.h` | `AllocUserQueueMemFromUMD` true only for major 10; gfx9 also needs the UMD-allocated user queue, else every submit fails with c01e0200 | gfx9 Windows | first kernel dispatch; hip-tests |
-| 3 | same patch | rocm-systems dxg `queue.cpp` | `HandleError` reports unknown queue errors as -1 (all error bits), which ROCr misreads as "insufficient scratch" and then access-violates; use 0x80000000 (HSA_STATUS_ERROR_EXCEPTION) | Windows ROCr | queue errors reported cleanly |
+| 2 | `0011-rocr-dxg-gfx9-umd-allocated-user-queue.patch` (carried since 2026-10-13; before that only `../rebased/rocm-systems-44be71b5-gfx9-fixes-2-3.patch`) | rocm-systems dxg `device.h` | `AllocUserQueueMemFromUMD` true only for major 10; gfx9 also needs the UMD-allocated user queue, else every submit fails with c01e0200 | gfx9 Windows | first kernel dispatch; hip-tests |
+| 3 | `0012-rocr-dxg-report-unknown-queue-errors-as-exception.patch` | rocm-systems dxg `queue.cpp` | `HandleError` reports unknown queue errors as -1 (all error bits), which ROCr misreads as "insufficient scratch" and then access-violates; use 0x80000000 (HSA_STATUS_ERROR_EXCEPTION) | Windows ROCr | queue errors reported cleanly |
 | 4 | `../rebased/wkmi-331b1985-gfx9-fixes-1-4.patch` | wkmi `wkmi.cpp` | GPU clock attributes about 100x too large for kmd < 2510 | Windows, legacy KMD | kmd 2319 and 2510/2520 branches |
 | 5 | (dropped) | rocm-systems dxg | `hipMemGetInfo` failed on APUs; superseded by the upstream librocdxg sync (rocm-systems #8012, 2026-07-03), already in the nightly | - | - |
 | 6 | `dxg-gfx9-acquire-mem-invalidate-vector-l1.patch` (**full variant, chosen**); `...-MINIMAL.patch` kept for reference | rocm-systems dxg `cmd_util.cpp` | gfx9 ACQUIRE_MEM never invalidates the vector L1 (or touches L2): stale cross-kernel reads, wrong results, runaway kernels, engine-reset storms, one 0x10E bugcheck | gfx9 Windows | 30-line repro; rocprim, rocthrust, hipsolver (11746/11746 vs 8095 fail + reset), hipfft, hipdnn; hip-tests 0 regressions; `dxg-gfx9-acquire-mem-evidence/` |
@@ -84,12 +84,16 @@ zero tests regress, and the run is 9 minutes shorter (no BatchAsync timeouts).
 
 ## 3. Experimental runtime changes (validated, opt-in)
 
+Carried since 2026-10-13 under `patches/gfx9-win-experimental/rocm-systems/` (not applied by
+`fetch_sources.py`; see the README there). All four were rebased onto the current pin; the CLR and
+ROCr parts compile on Linux, the dxg parts have not been rebuilt since the rebase.
+
 | patch | what | validated |
 |---|---|---|
-| `EXPERIMENTAL-dxg-gfx9-isolate-internal-queue-on-compute1.patch` (P2) | runtime's internal blit queue alone on COMPUTE1 so code-object uploads run while a user kernel occupies COMPUTE0 | 4 mempool tests fixed, 0 regressions (A4) |
-| `EXPERIMENTAL-dxg-pm4-honor-cu-mask.patch` | CU masks (`hipExtStreamCreateWithCUMask`, `HSA_CU_MASK`, green/execution contexts) were silently ignored on the PM4 path | `__smid()` probe 8/8 -> 1/2 CUs; 68 related hip-tests unchanged |
-| `EXPERIMENTAL-clr-pm4-host-stream-wait.patch` | `hipStreamWaitValue32/64` on PM4-emulated queues (ROCr `HSA_AMD_AGENT_INFO_PM4_EMULATION`) with host memory: a barrier that depends on a signal holds the stream (the PM4 emulation resolves it on the CPU) and a CPU thread polls the value and releases the signal, instead of a GPU spin kernel that holds the engine on a driver without compute preemption. `GPU_STREAMOPS_HOST_WAIT=0` disables it. Design and alternatives: `clr-pm4-host-stream-wait-evidence/` | dllstash `P2_final_hw` (C7ACB41D): `Unit_hipStreamWaitValue_Default` uint32/uint64 FAIL -> PASS (0.17 s), the other 21 stream-value tests unchanged (pass); every host-memory leaf of `Wait_Blocking` passes (9 conditions x 3 pointer kinds x 2 widths), its device-memory leaves still fail (GPU spin kernel kept there). Full hip-tests A9: 2587/23/335 vs A8 2585/25/335, zero regressions |
-| `trap-prototype/` | device traps (`assert`, `abort`, `__builtin_trap`): new gfx9 handler records the trap and ends the wave; the thunk enables it per dispatch and reports the error after the fence (env `DXG_TRAP=1`) | built (dllstash `P2_final_trap`); on gfx90c the KMD refuses the set-trap escape, so it stays disabled (bound=0). Kept for drivers that accept it |
+| `0002-dxg-gfx9-isolate-internal-queue-on-compute1.patch` (P2) | runtime's internal blit queue alone on COMPUTE1 so code-object uploads run while a user kernel occupies COMPUTE0 | 4 mempool tests fixed, 0 regressions (A4) |
+| `0003-dxg-pm4-honor-cu-mask.patch` | CU masks (`hipExtStreamCreateWithCUMask`, `HSA_CU_MASK`, green/execution contexts) were silently ignored on the PM4 path | `__smid()` probe 8/8 -> 1/2 CUs; 68 related hip-tests unchanged |
+| `0001-clr-pm4-host-stream-wait.patch` | `hipStreamWaitValue32/64` on PM4-emulated queues (ROCr `HSA_AMD_AGENT_INFO_PM4_EMULATION`) with host memory: a barrier that depends on a signal holds the stream (the PM4 emulation resolves it on the CPU) and a CPU thread polls the value and releases the signal, instead of a GPU spin kernel that holds the engine on a driver without compute preemption. `GPU_STREAMOPS_HOST_WAIT=0` disables it. Design and alternatives: `clr-pm4-host-stream-wait-evidence/` | dllstash `P2_final_hw` (C7ACB41D): `Unit_hipStreamWaitValue_Default` uint32/uint64 FAIL -> PASS (0.17 s), the other 21 stream-value tests unchanged (pass); every host-memory leaf of `Wait_Blocking` passes (9 conditions x 3 pointer kinds x 2 widths), its device-memory leaves still fail (GPU spin kernel kept there). Full hip-tests A9: 2587/23/335 vs A8 2585/25/335, zero regressions |
+| `0004-dxg-gfx9-trap-handler.patch` (handler source and probe: `trap-prototype/`) | device traps (`assert`, `abort`, `__builtin_trap`): new gfx9 handler records the trap and ends the wave; the thunk enables it per dispatch and reports the error after the fence (env `DXG_TRAP=1`) | built (dllstash `P2_final_trap`); on gfx90c the KMD refuses the set-trap escape, so it stays disabled (bound=0). Kept for drivers that accept it |
 
 ## 4. Build workarounds (box-only, not part of any fix)
 
@@ -153,7 +157,7 @@ zero tests regress, and the run is 9 minutes shorter (no BatchAsync timeouts).
   (dxdiag `Compute Preemption: DMA`; DisablePreemption=0 tested: no effect) and no hardware
   scheduling (dxdiag `Hardware Scheduling: DriverSupportState:AlwaysOff`), so the spin holds the
   engine while the write it waits for sits queued behind it on another queue, until the watchdog
-  fires. Prototype fix: section 3 (`EXPERIMENTAL-clr-pm4-host-stream-wait.patch`).
+  fires. Prototype fix: section 3 (`gfx9-win-experimental/rocm-systems/0001-clr-pm4-host-stream-wait.patch`).
 - A slow gfx9 iGPU runner also needs a longer GPU watchdog and fewer parallel GPU tests: libhipcxx
   runs whole test bodies as single-thread kernels (up to ~7 s here), and lit starts the slowest
   saved tests first. 16 workers at once on a GPU that runs one context at a time (no hardware

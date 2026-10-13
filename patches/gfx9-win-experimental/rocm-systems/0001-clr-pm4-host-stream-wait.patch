@@ -1,0 +1,219 @@
+From ae03e177892a18b3574c0d519fc95a7d43c3f004 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Tue, 13 Oct 2026 16:19:44 -0400
+Subject: [PATCH] gfx9-win: EXPERIMENTAL clr-pm4-host-stream-wait
+
+Opt-in prototype, not for upstream as is.
+
+hipStreamWaitValue32/64 defaults to a GPU spin kernel. On PM4-emulated queues
+(ROCr HSA_AMD_AGENT_INFO_PM4_EMULATION) under a KMD without compute
+preemption or hardware scheduling (legacy gfx9 Windows KMD), the spin holds the
+engine while the write it waits for sits queued behind it on another queue,
+until the watchdog fires.
+
+For host memory on PM4-emulated queues, submit a barrier that depends on a
+signal (the PM4 emulation resolves it on the CPU) and have a CPU thread poll
+the value and release the signal. Device memory keeps the GPU spin kernel.
+GPU_STREAMOPS_HOST_WAIT=0 disables it.
+
+Validated at the 7.15 nightly pin on gfx90c: Unit_hipStreamWaitValue_Default
+uint32/uint64 FAIL -> PASS, the other 21 stream-value tests unchanged,
+hip-tests 2587/23/335 vs 2585/25/335, zero regressions. Rebased onto the
+current pin; flags.hpp context changed (HIPRTC_USE_RUNTIME_UNBUNDLER removed
+upstream), no logic change.
+---
+ .../clr/rocclr/device/rocm/rocvirtual.cpp     | 114 ++++++++++++++++++
+ .../clr/rocclr/device/rocm/rocvirtual.hpp     |  16 +++
+ projects/clr/rocclr/utils/flags.hpp           |   3 +
+ 3 files changed, 133 insertions(+)
+
+diff --git a/projects/clr/rocclr/device/rocm/rocvirtual.cpp b/projects/clr/rocclr/device/rocm/rocvirtual.cpp
+index 14c6c3e5de..b21b21c978 100644
+--- a/projects/clr/rocclr/device/rocm/rocvirtual.cpp
++++ b/projects/clr/rocclr/device/rocm/rocvirtual.cpp
+@@ -2177,6 +2177,116 @@ void VirtualGPU::WaitCompleteSignal(hsa_signal_t signal) {
+   dispatchBarrierPacket(kBarrierPacketHeader, false);
+ }
+ 
++// ================================================================================================
++// Same conditions as the __amd_streamOpsWait blit kernel (device-libs amdblit.cl)
++static bool StreamWaitConditionMet(uint64_t current, uint64_t value, uint64_t mask,
++                                   unsigned int flags) {
++  switch (flags) {
++    case ROCCLR_STREAM_WAIT_VALUE_GTE:
++      return (current & mask) >= value;
++    case ROCCLR_STREAM_WAIT_VALUE_EQ:
++      return (current & mask) == value;
++    case ROCCLR_STREAM_WAIT_VALUE_AND:
++      return ((current & mask) & value) != 0;
++    case ROCCLR_STREAM_WAIT_VALUE_NOR:
++      return ((current | value) & mask) != mask;
++    default:
++      return true;
++  }
++}
++
++// ================================================================================================
++// The blit kernel spins on the GPU until the condition holds. On PM4-emulated queues that kernel
++// can hold the compute engine while the write it waits for is queued behind it on another queue,
++// and a driver without compute preemption never lets that write run. Instead, hold the queue with
++// a barrier that depends on a signal, and let a CPU thread poll the memory and release the signal:
++// the PM4 emulation resolves barrier dependencies on the CPU, so the engine stays free.
++bool VirtualGPU::submitHostStreamWait(amd::Memory& memory, size_t offset, size_t sizeBytes,
++                                      uint64_t value, uint64_t mask, unsigned int flags) {
++  // Captured graph packets are replayed later, without a CPU watcher
++  if (command_ != nullptr && command_->getPktCapturingState()) {
++    return false;
++  }
++
++  // The CPU can only poll host memory
++  address host = nullptr;
++  if (memory.getMemFlags() & CL_MEM_USE_HOST_PTR) {
++    host = reinterpret_cast<address>(memory.getHostMem());
++  } else if (memory.getMemFlags() & CL_MEM_SVM_FINE_GRAIN_BUFFER) {
++    host = reinterpret_cast<address>(memory.getSvmPtr());
++  }
++  if (host == nullptr) {
++    return false;
++  }
++  host += offset;
++
++  ReleaseHostStreamWaits(false);
++
++  auto wait = std::make_shared<HostStreamWait>();
++  if (Hsa::signal_create(kInitSignalValueOne, 0, nullptr, &wait->signal_) != HSA_STATUS_SUCCESS) {
++    return false;
++  }
++  // The PM4 emulation merges dispatches into one submission until a barrier or a completion
++  // signal comes along. The value may be written by earlier work in this stream, and the barrier
++  // below blocks this queue's conversion until it is, so get that work submitted first.
++  constexpr bool kSkipSignal = true;
++  dispatchBarrierPacket(kNopPacketHeader, kSkipSignal);
++  WaitCompleteSignal(wait->signal_);
++  // The barrier holds the last index reserved so far. Another stream sharing the HW queue can only
++  // make this later, which just delays the release of the signal.
++  wait->queue_ = gpu_queue_;
++  wait->barrier_index_ = Hsa::queue_load_write_index_relaxed(gpu_queue_) - 1;
++  host_stream_waits_.push_back(wait);
++
++  const bool is32 = (sizeBytes == sizeof(uint32_t));
++  if (is32) {
++    value &= std::numeric_limits<uint32_t>::max();
++    mask &= std::numeric_limits<uint32_t>::max();
++  }
++  std::thread([wait, host, is32, value, mask, flags]() {
++    for (uint32_t polls = 0;; ++polls) {
++      const uint64_t current = is32 ? *reinterpret_cast<volatile uint32_t*>(host)
++                                    : *reinterpret_cast<volatile uint64_t*>(host);
++      if (StreamWaitConditionMet(current, value, mask, flags)) {
++        break;
++      }
++      // Spin briefly for short waits, then back off to leave the core to others
++      if (polls < 4096) {
++        std::this_thread::yield();
++      } else {
++        std::this_thread::sleep_for(std::chrono::microseconds(100));
++      }
++    }
++    std::atomic_thread_fence(std::memory_order_acquire);
++    Hsa::signal_store_screlease(wait->signal_, 0);
++    wait->done_.store(true, std::memory_order_release);
++  }).detach();
++
++  ClPrint(amd::LOG_DEBUG, amd::LOG_COPY,
++          "Waiting on the CPU for value: 0x%llx. Flags: 0x%x mask: 0x%llx",
++          static_cast<unsigned long long>(value), flags, static_cast<unsigned long long>(mask));
++  return true;
++}
++
++// ================================================================================================
++void VirtualGPU::ReleaseHostStreamWaits(bool all) {
++  for (auto it = host_stream_waits_.begin(); it != host_stream_waits_.end();) {
++    const HostStreamWait& wait = **it;
++    bool release = false;
++    if (wait.done_.load(std::memory_order_acquire)) {
++      // A queue switch only happens on an idle queue, so the barrier is consumed then too
++      release = all || (wait.queue_ != gpu_queue_) || (gpu_queue_ == nullptr) ||
++                (Hsa::queue_load_read_index_scacquire(gpu_queue_) > wait.barrier_index_);
++    }
++    if (release) {
++      Hsa::signal_destroy(wait.signal_);
++      it = host_stream_waits_.erase(it);
++    } else {
++      ++it;
++    }
++  }
++}
++
+ // ================================================================================================
+ void VirtualGPU::dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal,
+                                        hsa_signal_t signal) {
+@@ -2478,6 +2588,7 @@ VirtualGPU::~VirtualGPU() {
+     }
+     // Release the resources of signal
+     releaseGpuMemoryFence();
++    ReleaseHostStreamWaits(true);
+   }
+ 
+   // Release any retained coalescing-window signal not freed via releaseGpuMemoryFence.
+@@ -4314,6 +4425,9 @@ void VirtualGPU::submitStreamOperation(amd::StreamOperationCommand& cmd) {
+           ShouldNotReachHere();
+           break;
+       }
++    } else if (GPU_STREAMOPS_HOST_WAIT && dev().IsPm4Emulation() &&
++               submitHostStreamWait(*amdMemory, offset, sizeBytes, value, mask, flags)) {
++      // Waited on the CPU, see submitHostStreamWait()
+     }
+     // Use a blit kernel to perform the wait operation
+     else {
+diff --git a/projects/clr/rocclr/device/rocm/rocvirtual.hpp b/projects/clr/rocclr/device/rocm/rocvirtual.hpp
+index b8cb150270..1d9e3be853 100644
+--- a/projects/clr/rocclr/device/rocm/rocvirtual.hpp
++++ b/projects/clr/rocclr/device/rocm/rocvirtual.hpp
+@@ -668,6 +668,13 @@ class VirtualGPU : public device::VirtualDevice {
+   void setFenceDirty(bool state) { fence_dirty_.store(state, std::memory_order_release); }
+   void WaitCompleteSignal(hsa_signal_t signal);
+ 
++  //! Waits on the CPU for a stream wait-value condition on host memory (PM4-emulated queues)
++  bool submitHostStreamWait(amd::Memory& memory, size_t offset, size_t sizeBytes, uint64_t value,
++                            uint64_t mask, unsigned int flags);
++
++  //! Destroys the signals of host stream waits the queue no longer references
++  void ReleaseHostStreamWaits(bool all);
++
+   void HiddenHeapInit();
+   uint64_t getQueueID();
+ 
+@@ -958,6 +965,15 @@ class VirtualGPU : public device::VirtualDevice {
+   std::once_flag scheduler_thread_init_;              //!< Ensures thread is initialized exactly once
+   std::vector<hsa_signal_t> pendingSchedulerEvents_;  //!< Pending scheduler completion signals
+ 
++  //! A stream wait-value condition the CPU polls for, see submitHostStreamWait()
++  struct HostStreamWait {
++    hsa_signal_t signal_{};               //!< Dependency of the barrier that holds the queue
++    const hsa_queue_t* queue_ = nullptr;  //!< Queue of that barrier
++    uint64_t barrier_index_ = 0;          //!< AQL index of that barrier (or a later one)
++    std::atomic<bool> done_{false};       //!< The CPU watcher no longer touches the signal
++  };
++  std::vector<std::shared_ptr<HostStreamWait>> host_stream_waits_;  //!< Pending host waits
++
+   HwQueueTracker barriers_;  //!< Tracks active barriers in ROCr
+ 
+   ManagedBuffer managed_buffer_;          //!< Memory manager for staging copies
+diff --git a/projects/clr/rocclr/utils/flags.hpp b/projects/clr/rocclr/utils/flags.hpp
+index 6d83af4be9..d1e2c9f7cc 100644
+--- a/projects/clr/rocclr/utils/flags.hpp
++++ b/projects/clr/rocclr/utils/flags.hpp
+@@ -223,6 +223,9 @@ release(bool, ROC_SKIP_KERNEL_ARG_COPY, false,                                \
+         "If true, then runtime can skip kernel arg copy")                     \
+ release(bool, GPU_STREAMOPS_CP_WAIT, false,                                   \
+         "Force the stream wait memory operation to wait on CP.")              \
++release(bool, GPU_STREAMOPS_HOST_WAIT, true,                                  \
++        "On PM4-emulated queues, wait for stream wait-value conditions on "  \
++        "host memory on the CPU instead of in a GPU spin kernel.")           \
+ release(size_t, HIP_INITIAL_DM_SIZE, 8 * Mi,                                  \
+         "Set initial heap size for device malloc.")                           \
+ release(bool, HIP_FORCE_DEV_KERNARG, true,                                    \
+-- 
+2.43.0
+

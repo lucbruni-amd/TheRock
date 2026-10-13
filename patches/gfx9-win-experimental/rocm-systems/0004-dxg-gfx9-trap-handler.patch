@@ -1,0 +1,286 @@
+From 02cd9c0b7b7e4bc3c5ba59596c911b9a4fdeea8b Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Tue, 13 Oct 2026 16:21:24 -0400
+Subject: [PATCH] gfx9-win: EXPERIMENTAL dxg-gfx9-trap-handler
+
+Opt-in prototype (DXG_TRAP=1), not for upstream as is.
+
+On gfx9 under Windows ROCr, device traps (assert, abort, __builtin_trap) have
+no handler that reports them: the PM4-emulated queues have no consumer for
+the s_sendmsg interrupt the regular handlers rely on. With DXG_TRAP=1 ROCr
+binds a small gfx9 handler that records the trap (ttmp0-15, STATUS, TRAPSTS,
+HW_ID) in a mailbox at TMA and ends the wave. If the KMD accepts the
+set-trap-handler escape, the thunk sets TRAP_PRESENT per dispatch and fails
+the queue with HSA_STATUS_ERROR_EXCEPTION after the dispatch's fence.
+DXG_TRAP_DIAG prints the escape result and the trap record.
+
+Built at the 7.15 nightly pin. On gfx90c the legacy KMD (2319) refuses the
+escape, so the handler stays unbound; kept for KMDs that accept it. Handler
+source: docs/gfx9-windows/trap-prototype/dxg_trap_gfx9.s in TheRock.
+
+Rebased onto the current pin: the KMD debugger version check keeps upstream's
+1.2 to 2.x range, and the trap check follows upstream's sync_point fence wait.
+Not rebuilt or retested after the rebase.
+---
+ .../libhsakmt/include/impl/wddm/cmd_util.h    |  1 +
+ .../libhsakmt/include/impl/wddm/device.h      |  9 +++-
+ .../rocr-runtime/libhsakmt/src/dxg/debug.cpp  | 11 +++-
+ .../libhsakmt/src/dxg/wddm/cmd_util.cpp       |  2 +
+ .../libhsakmt/src/dxg/wddm/device.cpp         | 33 +++++++++++-
+ .../libhsakmt/src/dxg/wddm/queue.cpp          |  4 ++
+ .../hsa-runtime/core/inc/amd_gpu_agent.h      |  3 ++
+ .../core/runtime/amd_gpu_agent.cpp            | 51 +++++++++++++++++++
+ 8 files changed, 109 insertions(+), 5 deletions(-)
+
+diff --git a/projects/rocr-runtime/libhsakmt/include/impl/wddm/cmd_util.h b/projects/rocr-runtime/libhsakmt/include/impl/wddm/cmd_util.h
+index 73fc5e4a30..2810a1fd89 100644
+--- a/projects/rocr-runtime/libhsakmt/include/impl/wddm/cmd_util.h
++++ b/projects/rocr-runtime/libhsakmt/include/impl/wddm/cmd_util.h
+@@ -31,6 +31,7 @@ struct DispatchInfo {
+   uint32_t                      offsetCnt;
+   uint32_t                      packetIndex;
+   const uint32_t                *pSeMask;
++  bool                          trapPresent;
+ };
+ 
+ class CmdUtil {
+diff --git a/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h b/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
+index 94331a2919..18d7a4a70c 100644
+--- a/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
++++ b/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
+@@ -262,7 +262,11 @@ public:
+   // Debugger support
+   bool GetKmdDbgVersion(struct Wkmi::KmdDbgVersion *version) const;
+   bool RegisterRuntimeState(uint32_t runtime_state, const void* r_debug, bool ttmp_setup_hint) const;
+-  bool SetTrapHandler(uint64_t tba, uint64_t tma) const;
++  bool SetTrapHandler(uint64_t tba, uint64_t tma);
++  // EXPERIMENT (DXG_TRAP=1, gfx9): a trap handler that records traps in a mailbox at TMA is bound.
++  bool TrapBound() const { return trap_bound_; }
++  // True if the trap handler recorded a trap that has not been reported yet.
++  bool CheckTrap();
+ 
+ private:
+   bool Escape(void* priv_data, uint32_t priv_size, bool hw_access) const;
+@@ -305,6 +309,9 @@ private:
+ 
+   uint32_t cmdbuf_size_;
+   std::atomic<uint32_t> compute_queue_count_{0};
++  bool trap_bound_ = false;
++  volatile uint32_t* trap_mailbox_ = nullptr;
++  std::atomic<uint32_t> trap_seen_{0};
+   uint32_t cmdbuf_aql_frame_size_;
+   // Both narrowed by InitCmdbufInfo(): the ring so it keeps fitting in a fixed
+   // byte budget as the frame size grows, the merge limit so a run of merged
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/debug.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/debug.cpp
+index 0189adcee1..4b26e3577f 100644
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/debug.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/debug.cpp
+@@ -24,6 +24,8 @@
+  */
+ 
+ #include <cassert>
++#include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ 
+ #include "topology.hpp"
+@@ -76,8 +78,13 @@ HSAKMT_STATUS HSAKMTAPI hsaKmtCheckRuntimeDebugSupport(void) {
+   }
+ 
+   for (auto&& device : dxg_topology->wdevices_) {
+-    if (Wkmi::KmdDbgVersion version;
+-        !device->GetKmdDbgVersion(&version) ||
++    Wkmi::KmdDbgVersion version = {};
++    const bool queried = device->GetKmdDbgVersion(&version);
++    if (getenv("DXG_TRAP_DIAG") != nullptr) {
++      fprintf(stderr, "[DXG_TRAP] KMD debugger interface: query %s, version %u.%u\n",
++              queried ? "ok" : "FAILED", unsigned(version.major), unsigned(version.minor));
++    }
++    if (!queried ||
+         version.major < 1 ||
+         version.major > 2 ||
+         (version.major == 1 && version.minor < 2)) {
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp
+index 1e743bbb0d..7c322ebf24 100644
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/cmd_util.cpp
+@@ -217,6 +217,8 @@ size_t CmdUtil::BuildDispatch(
+   }
+   dispatch.program_resource_regs.compute_pgm_rsrc2 =
+     (pInfo->ldsBlks << 15) | pInfo->pKernelObject->compute_pgm_rsrc2;
++  // gfx9 has no other per-wave trap enable: without TRAP_PRESENT s_trap is a no-op.
++  if (pInfo->trapPresent) dispatch.program_resource_regs.compute_pgm_rsrc2 |= (1 << 6);
+ 
+   GenerateSetShRegHeader(&dispatch.resource_regs, mmCOMPUTE_RESOURCE_LIMITS);
+   dispatch.resource_regs.compute_resource_limits = 0x3ff;
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp
+index 572b1b7f43..665fc25386 100644
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp
+@@ -1460,14 +1460,43 @@ bool WDDMDevice::RegisterRuntimeState(uint32_t runtime_state, const void* r_debu
+   return ret;
+ }
+ 
+-bool WDDMDevice::SetTrapHandler(uint64_t tba, uint64_t tma) const {
++bool WDDMDevice::SetTrapHandler(uint64_t tba, uint64_t tma) {
+   int priv_size = Wkmi::GetDebuggerCmdPrivDataSize();
+   void* priv_data = alloca(priv_size);
+ 
+   memset(priv_data, 0, priv_size);
+   Wkmi::FillinTrapHandlerPrivData(priv_data, tba, tma);
+ 
+-  return Escape(priv_data, priv_size, true);
++  bool ret = Escape(priv_data, priv_size, true);
++
++  // EXPERIMENT (DXG_TRAP=1): ROCr binds a gfx9 handler that records traps at TMA and ends the
++  // wave. Only enable it per dispatch (TRAP_PRESENT) if the kernel driver accepted it.
++  const char* exp = getenv("DXG_TRAP");
++  if (ret && device_info_.major == 9 && exp != nullptr && exp[0] == '1' && tma != 0) {
++    trap_mailbox_ = reinterpret_cast<volatile uint32_t*>(tma);
++    trap_bound_ = true;
++  }
++  if (getenv("DXG_TRAP_DIAG") != nullptr) {
++    fprintf(stderr, "[DXG_TRAP] SetTrapHandler escape: tba=0x%llx tma=0x%llx -> %s, bound=%d\n",
++            (unsigned long long)tba, (unsigned long long)tma, ret ? "ok" : "FAILED", trap_bound_);
++  }
++  return ret;
++}
++
++bool WDDMDevice::CheckTrap() {
++  if (!trap_bound_) return false;
++  uint32_t count = trap_mailbox_[0];
++  uint32_t seen = trap_seen_.load();
++  if (count == seen || !trap_seen_.compare_exchange_strong(seen, count)) return false;
++  // Record layout written by the handler: +0x40 + slot * 0x80: ttmp0-15, STATUS, TRAPSTS, HW_ID.
++  const volatile uint32_t* rec = trap_mailbox_ + (0x40 + (seen & 3) * 0x80) / 4;
++  pr_err("GPU trap: wave ended by trap handler (traps so far %u), PC 0x%04x%08x trap id %u, "
++         "STATUS 0x%08x TRAPSTS 0x%08x HW_ID 0x%08x\n",
++         count, rec[1] & 0xffff, rec[0], (rec[1] >> 16) & 0xff, rec[16], rec[17], rec[18]);
++  if (getenv("DXG_TRAP_DIAG") != nullptr) {
++    for (int i = 0; i < 16; i++) fprintf(stderr, "[DXG_TRAP]   ttmp%-2d = 0x%08x\n", i, rec[i]);
++  }
++  return true;
+ }
+ 
+ 
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
+index 7ef09895e3..536cda0728 100644
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
+@@ -790,6 +790,7 @@ hsa_status_t ComputeQueue::KernelDispatchAqlToPm4(char* cpu, hsa_kernel_dispatch
+   memset(info.scratchBaseOffset, 0, sizeof(info.scratchBaseOffset));
+   info.offsetCnt = 0;
+   info.pSeMask = se_mask_;
++  info.trapPresent = device->TrapBound();
+   info.packetIndex = (reinterpret_cast<uint64_t>(packet) -
+                       reinterpret_cast<uint64_t>(amd_queue_rocr_->hsa_queue.base_address)) /
+       64;
+@@ -1157,6 +1158,9 @@ hsa_status_t ComputeQueue::Process(void) {
+       // because the wait array belongs to the KMD for the duration of the call.
+       uint64_t fence_value = sync_point;
+       if (!device->CpuWait(&syncobj, &fence_value, 1, false)) return HSA_STATUS_ERROR;
++      // A wave hit a trap (assert, abort, memory violation...): fail the queue like the kernel
++      // driver does on Linux instead of reporting the dispatch as complete.
++      if (device->CheckTrap()) return HSA_STATUS_ERROR_EXCEPTION;
+       // CPU update completional signal
+       rocr::atomic::Decrement(signal_addr_);
+       signal_addr_ = NULL;
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/core/inc/amd_gpu_agent.h b/projects/rocr-runtime/runtime/hsa-runtime/core/inc/amd_gpu_agent.h
+index 31d5818ea5..75c82eed0f 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/core/inc/amd_gpu_agent.h
++++ b/projects/rocr-runtime/runtime/hsa-runtime/core/inc/amd_gpu_agent.h
+@@ -759,6 +759,9 @@ class GpuAgent : public GpuAgentInt {
+   // Correlates with output of s_sendmsg(MSG_GET_DOORBELL) for queue identification.
+   amd_queue_v2_t** doorbell_queue_map_;
+ 
++  // Mailbox written by the dxg gfx9 trap handler (EXPERIMENT, see BindTrapHandler).
++  void* trap_mailbox_ = nullptr;
++
+   // @brief The GPU memory bus width in bit.
+   uint32_t memory_bus_width_;
+ 
+diff --git a/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_gpu_agent.cpp b/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_gpu_agent.cpp
+index 8d1b10ebb6..cdd26344d4 100644
+--- a/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_gpu_agent.cpp
++++ b/projects/rocr-runtime/runtime/hsa-runtime/core/runtime/amd_gpu_agent.cpp
+@@ -46,6 +46,8 @@
+ #include <atomic>
+ #include <cinttypes>
+ #include <climits>
++#include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <map>
+ #include <set>
+@@ -1159,6 +1161,7 @@ void GpuAgent::ReleaseResources() {
+     }
+ 
+     system_deallocator()(doorbell_queue_map_);
++    if (trap_mailbox_) system_deallocator()(trap_mailbox_);
+ 
+     if (trap_code_buf_ != NULL)
+       system_deallocator()(trap_code_buf_);
+@@ -3432,12 +3435,60 @@ hsa_status_t GpuAgent::UpdateTrapHandlerWithPCS(pcs_sampling_data_t* pcs_hosttra
+                                  tma_size);
+ }
+ 
++// gfx9 trap handler for the Windows dxg path (EXPERIMENT, DXG_TRAP=1). The PM4-emulated queues
++// have no consumer for the s_sendmsg interrupt the regular handlers rely on, so this handler
++// records the trap in a mailbox and ends the wave; the thunk reports it after the dispatch's fence.
++// The mailbox address is stored at handler + kDxgTrapMailboxPtrOffset. Source:
++// upstream-patches/trap-prototype/dxg_trap_gfx9.s.
++static const unsigned int kCodeTrapHandlerDxg9[] = {
++    0xbe801c00, 0x8000ff00, 0x000000fc, 0x82018001, 0xc0070080, 0x00000000,
++    0xbf8cc07f, 0xbe840081, 0xc20b0101, 0x00000000, 0xbf8cc07f, 0xbf098404,
++    0xbf850013, 0x8e048704, 0x8004c004, 0x80020402, 0x82038003, 0xc04b1b01,
++    0x00000000, 0xc04b1c01, 0x00000010, 0xc04b1d01, 0x00000020, 0xc04b1e01,
++    0x00000030, 0xb884f802, 0xb885f803, 0xb886f804, 0xbe8700ff, 0x50415254,
++    0xc04b0101, 0x00000040, 0xc0840000, 0x00000000, 0xbf8cc07f, 0xbf810000,
++};
++static constexpr size_t kDxgTrapMailboxPtrOffset = 0x100;
++static constexpr size_t kDxgTrapMailboxSize = 0x1000;
++
++static bool DxgTrapExperimentEnabled() {
++  const char* v = getenv("DXG_TRAP");
++  return v != nullptr && v[0] == '1';
++}
++
+ void GpuAgent::BindTrapHandler() {
+   if (supported_isas()[0]->GetMajorVersion() == 7) {
+     // No trap handler support on Gfx7, soft error.
+     return;
+   }
+ 
++  if (core::Runtime::runtime_singleton_->thunkLoader()->IsDXG() && DxgTrapExperimentEnabled() &&
++      supported_isas()[0]->GetMajorVersion() == 9 && supported_isas()[0]->GetMinorVersion() == 0 &&
++      supported_isas()[0]->GetStepping() != 10) {
++    static_assert(sizeof(kCodeTrapHandlerDxg9) <= kDxgTrapMailboxPtrOffset, "handler too large");
++    trap_code_buf_size_ = 0x1000;
++    trap_code_buf_ = system_allocator()(trap_code_buf_size_, 0x1000,
++                                        core::MemoryRegion::AllocateExecutable |
++                                        core::MemoryRegion::AllocateExecutableBlitKernelObject);
++    trap_mailbox_ = system_allocator()(kDxgTrapMailboxSize, 0x1000, 0);
++    if (trap_code_buf_ == nullptr || trap_mailbox_ == nullptr) {
++      throw AMD::hsa_exception(HSA_STATUS_ERROR_OUT_OF_RESOURCES, "Trap handler allocation failed.");
++    }
++    memset(trap_code_buf_, 0, trap_code_buf_size_);
++    memcpy(trap_code_buf_, kCodeTrapHandlerDxg9, sizeof(kCodeTrapHandlerDxg9));
++    memset(trap_mailbox_, 0, kDxgTrapMailboxSize);
++    const uint64_t mailbox = reinterpret_cast<uintptr_t>(trap_mailbox_);
++    memcpy(static_cast<char*>(trap_code_buf_) + kDxgTrapMailboxPtrOffset, &mailbox,
++           sizeof(mailbox));
++    hsa_status_t err = driver().SetTrapHandler(node_id(), trap_code_buf_, trap_code_buf_size_,
++                                               trap_mailbox_, kDxgTrapMailboxSize);
++    if (getenv("DXG_TRAP_DIAG") != nullptr) {
++      fprintf(stderr, "[DXG_TRAP] ROCr bound dxg gfx9 handler: tba=%p tma=%p status=%d\n",
++              trap_code_buf_, trap_mailbox_, int(err));
++    }
++    return;
++  }
++
+   // Assemble the trap handler source code.
+   void* tma_addr = nullptr;
+   uint64_t tma_size = 0;
+-- 
+2.43.0
+
