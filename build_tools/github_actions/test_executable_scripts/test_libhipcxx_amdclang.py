@@ -13,6 +13,7 @@ import platform
 from libhipcxx_utils import (
     get_gpu_architecture_portable,
     prepend_env_path,
+    set_dll_directory,
 )
 
 THEROCK_BIN_DIR = os.getenv("THEROCK_BIN_DIR")
@@ -21,6 +22,14 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 THEROCK_DIR = SCRIPT_DIR.parent.parent.parent
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+# On Windows lit builds and runs each test executable inside the build tree, away
+# from the artifact's DLLs, and the loader searches System32 before PATH, so a
+# driver-installed amdhip64_7.dll there would be tested instead of the artifact's
+# (TheRock#7132). Select the artifact bin/ dir for every child we spawn
+# (offload-arch, ninja -> lit -> the tests). See set_dll_directory.
+if platform.system() == "Windows":
+    set_dll_directory(str(Path(THEROCK_BIN_DIR).resolve()))
 
 gpu_arch = get_gpu_architecture_portable(OUTPUT_ARTIFACTS_DIR)
 logging.info(f"++ Detected GPU architecture: {gpu_arch}")

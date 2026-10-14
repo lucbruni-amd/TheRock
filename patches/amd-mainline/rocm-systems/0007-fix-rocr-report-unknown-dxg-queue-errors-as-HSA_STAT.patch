@@ -1,0 +1,38 @@
+From 02f136fe4cad6362023312fe0f0d86128897c7b8 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Tue, 13 Oct 2026 16:18:01 -0400
+Subject: [PATCH] fix(rocr): report unknown dxg queue errors as
+ HSA_STATUS_ERROR_EXCEPTION
+
+ComputeQueue::HandleError() initializes the queue-inactive signal value to -1
+and only overwrites it for recognized statuses. -1 sets every error bit,
+including 0x401, so ROCr (amd_aql_queue.cpp) treats an unrecognized queue
+error as "insufficient scratch", runs scratch recovery on a healthy queue and
+access-violates in ~AqlQueue.
+
+Default to 0x80000000, which maps to HSA_STATUS_ERROR_EXCEPTION, a clean
+fatal queue error.
+---
+ projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
+index 96b1254da4..1badcf6f1b 100644
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
+@@ -181,7 +181,11 @@ hsa_status_t WDDMQueue::SetCuMask(uint32_t cu_mask_count, const uint32_t* queue_
+ // ================================================================================================
+ void ComputeQueue::HandleError(hsa_status_t status) {
+   hsa_signal_t sig = amd_queue_rocr_->queue_inactive_signal;
+-  hsa_signal_value_t val = -1;
++  // An unrecognised status must NOT default to -1: that sets EVERY error bit, including
++  // 0x401, so ROCr (amd_aql_queue.cpp) mistakes it for "insufficient scratch", runs
++  // scratch recovery on a healthy queue and access-violates in ~AqlQueue.
++  // 0x80000000 maps to HSA_STATUS_ERROR_EXCEPTION, a clean fatal queue error.
++  hsa_signal_value_t val = 0x80000000;
+ 
+   struct queue_error_t {
+     uint32_t code;
+-- 
+2.43.0
+

@@ -1,0 +1,62 @@
+From 9a9c397e090e0729588d7ab3a018d0571e9d4849 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] test(hip-tests): 64-bit lane masks in warp reduce tests
+
+The warp reduce and rtc reduce tests build lane masks with (1ul << lane),
+which is 32-bit on Windows (LLP64), so wave64 lanes 32-63 are dropped from
+the expected results. Use 64-bit shifts.
+
+Checked on gfx90c: WarpTest 13 -> 0 failures.
+---
+ projects/hip-tests/catch/unit/rtc/rtc_reduce.cc   | 2 +-
+ projects/hip-tests/catch/unit/warp/warp_reduce.cc | 6 +++---
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/projects/hip-tests/catch/unit/rtc/rtc_reduce.cc b/projects/hip-tests/catch/unit/rtc/rtc_reduce.cc
+index ff6f99db17..a006eeae7f 100644
+--- a/projects/hip-tests/catch/unit/rtc/rtc_reduce.cc
++++ b/projects/hip-tests/catch/unit/rtc/rtc_reduce.cc
+@@ -146,7 +146,7 @@ void runAndCompileTest(const std::tuple<Types...> types) {
+ 
+       for (int i = 0; i < *numReduces; i++) {
+         int idx = warpSize * i + laneId;
+-        if (masks[i] & (1ul << tid)) {
++        if (masks[i] & (1ull << tid)) {
+           // call the operator only if the lane is mentioned in the mask
+           T& result = output[idx];
+           result = )" +
+diff --git a/projects/hip-tests/catch/unit/warp/warp_reduce.cc b/projects/hip-tests/catch/unit/warp/warp_reduce.cc
+index 18a4eb3857..f0abe18664 100644
+--- a/projects/hip-tests/catch/unit/warp/warp_reduce.cc
++++ b/projects/hip-tests/catch/unit/warp/warp_reduce.cc
+@@ -33,7 +33,7 @@ __global__ void multipleMasksKernel(T* output, const T* input, const unsigned lo
+ 
+   while (numMask < numMasks && !isInAnyOfTheMasks) {
+     mask = masks[numMask];
+-    if ((1ul << threadIdx.x) & mask) isInAnyOfTheMasks = true;
++    if ((1ull << threadIdx.x) & mask) isInAnyOfTheMasks = true;
+ 
+     numMask++;
+   }
+@@ -49,7 +49,7 @@ __global__ void reduceOp(T* output, const T* input, const MaskType* masks, int n
+   int laneId = tid % warpSize;
+ 
+   for (int i = 0; i < numReduces; i++) {
+-    if (masks[i] & (1ul << laneId)) {
++    if (masks[i] & (1ull << laneId)) {
+       int idx = warpSize * i + laneId;
+       // call the operator only if the lane is mentioned in the mask
+       T& result = output[idx];
+@@ -102,7 +102,7 @@ template <class T> void runTestMultipleMasks(unsigned long long masks[], int num
+     int lane = 0;
+ 
+     while (lane < wavefrontSize) {
+-      if ((1ul << lane) & mask) {
++      if ((1ull << lane) & mask) {
+         T result = output.ptr()[lane];
+ 
+         if constexpr (std::is_integral<T>::value) {
+-- 
+2.43.0
+

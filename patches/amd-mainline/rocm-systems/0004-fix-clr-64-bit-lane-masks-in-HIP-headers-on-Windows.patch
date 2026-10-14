@@ -1,0 +1,47 @@
+From 3dc6a951eece362d97784e907662ac95a3ebcad0 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] fix(clr): 64-bit lane masks in HIP headers on Windows
+
+The generic warp reduce/scan path computes (1ul << laneId) and
+__lastbit_u32_u64 uses __builtin_ctzl. unsigned long is 32-bit on Windows
+(LLP64), so lanes 32-63 of a wave64 mask are lost and lastbit is wrong for
+64-bit inputs. Use 64-bit types.
+
+Affects wave64 (gfx9) on Windows; lastbit affects all Windows targets.
+Checked: device IR now matches Linux; Rtc_ReduceRandom passes with a rebuilt
+hiprtc.
+---
+ .../clr/hipamd/include/hip/amd_detail/amd_device_functions.h    | 2 +-
+ .../clr/hipamd/include/hip/amd_detail/amd_warp_sync_functions.h | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/projects/clr/hipamd/include/hip/amd_detail/amd_device_functions.h b/projects/clr/hipamd/include/hip/amd_detail/amd_device_functions.h
+index 6ccbca0765..fc6f4bce33 100644
+--- a/projects/clr/hipamd/include/hip/amd_detail/amd_device_functions.h
++++ b/projects/clr/hipamd/include/hip/amd_detail/amd_device_functions.h
+@@ -159,7 +159,7 @@ __device__ static inline unsigned long long int __brevll(unsigned long long int
+ }
+ 
+ __device__ static inline unsigned int __lastbit_u32_u64(__hip_uint64_t input) {
+-  return input == 0 ? -1 : __builtin_ctzl(input);
++  return input == 0 ? -1 : __builtin_ctzll(input);
+ }
+ 
+ __device__ static inline unsigned int __bitextract_u32(unsigned int src0, unsigned int src1,
+diff --git a/projects/clr/hipamd/include/hip/amd_detail/amd_warp_sync_functions.h b/projects/clr/hipamd/include/hip/amd_detail/amd_warp_sync_functions.h
+index 64696d9c46..89dae2a9cd 100644
+--- a/projects/clr/hipamd/include/hip/amd_detail/amd_warp_sync_functions.h
++++ b/projects/clr/hipamd/include/hip/amd_detail/amd_warp_sync_functions.h
+@@ -379,7 +379,7 @@ __device__ inline T __reduce_op_sync(MaskT mask, T val, BinaryOp op, WfReduce wf
+     // the number of bits in the mask is a power of 2
+     numIterations -= 1;
+ 
+-  maskIdx = __popcll(((1ul << laneId) - 1) & mask);
++  maskIdx = __popcll(((1ull << laneId) - 1) & mask);
+   mask >>= laneId;
+   mask >>= 1ul;
+ 
+-- 
+2.43.0
+

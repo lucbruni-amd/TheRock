@@ -88,6 +88,15 @@ TEST_TO_IGNORE = {
             "Unit_hipStreamValue_Wait_Blocking - uint32_t",
         ]
     },
+    "gfx103X-all": {
+        "windows": [
+            # Hangs past the test timeout and wedges the GPU, so every later test in the
+            # shard times out (TheRock#4641). Same cause as gfx110X above: the default
+            # stream wait is a GPU spin kernel.
+            "Unit_hipStreamValue_Wait_Blocking - uint64_t",
+            "Unit_hipStreamValue_Wait_Blocking - uint32_t",
+        ]
+    },
     "gfx125X-dcgpu": {
         "linux": [
             "Unit_hipGraphAddMemcpyNode1D_Positive_Basic",

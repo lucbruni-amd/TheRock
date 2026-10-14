@@ -1,0 +1,30 @@
+From adb5859f6d1b87ca0ddd05be8fa0db2ea9e25f2d Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] fix(miopen): use int64_t for the MultiMarginLoss p parameter
+
+The invoke params declare p as long, but the kernel takes int64_t. long is
+32-bit on Windows (LLP64), so the kernel argument layout does not match and
+every MultiMarginLoss case fails on every Windows GPU.
+
+Checked on gfx1036 (Windows, PAL and ROCr): 0/32 -> 32/32.
+---
+ .../miopen/src/include/miopen/multimarginloss/invoke_params.hpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/projects/miopen/src/include/miopen/multimarginloss/invoke_params.hpp b/projects/miopen/src/include/miopen/multimarginloss/invoke_params.hpp
+index 9d8a8e3498f..64d220a0fa8 100644
+--- a/projects/miopen/src/include/miopen/multimarginloss/invoke_params.hpp
++++ b/projects/miopen/src/include/miopen/multimarginloss/invoke_params.hpp
+@@ -46,7 +46,7 @@ struct InvokeParams : public miopen::InvokeParams
+     ConstData_t w = nullptr;
+     Data_t o      = nullptr;
+ 
+-    long p;
++    int64_t p; // the kernel takes int64_t; long is 32-bit on Windows
+     float margin;
+ 
+     Data_t workspace           = nullptr;
+-- 
+2.43.0
+

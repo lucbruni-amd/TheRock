@@ -1,0 +1,46 @@
+From 0d5e650673b30a12baceae2a88a4e69ee4b0da7b Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] test(miopen): skip instead of throwing on an uncharacterized
+ GPU
+
+gtest_common.cpp throws "unknown_gpu" for any arch it does not list, so
+every solver test SetUp fails on, for example, gfx90c (382 failures) instead
+of the device-gated tests skipping. Return Gpu::None there, and add gfx90c
+and gfx1036 to the handle test's arch-name list.
+---
+ projects/miopen/test/gtest/gtest_common.cpp | 3 ++-
+ projects/miopen/test/gtest/handle_test.cpp  | 3 ++-
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/projects/miopen/test/gtest/gtest_common.cpp b/projects/miopen/test/gtest/gtest_common.cpp
+index bc2fdb25b53..914f50485e9 100644
+--- a/projects/miopen/test/gtest/gtest_common.cpp
++++ b/projects/miopen/test/gtest/gtest_common.cpp
+@@ -98,7 +98,8 @@ Gpu GetGpuType(const std::string& dev_name)
+         return Gpu::gfx120X;
+     if(miopen::StartsWith(arch, "gfx125"))
+         return Gpu::gfx125X;
+-    throw std::runtime_error("unknown_gpu");
++    // An uncharacterized arch (e.g. gfx90c): device-gated tests skip instead of every SetUp throwing.
++    return Gpu::None;
+ }
+ 
+ Gpu GetDevGpuType()
+diff --git a/projects/miopen/test/gtest/handle_test.cpp b/projects/miopen/test/gtest/handle_test.cpp
+index 8989e297540..f3adb23c37e 100644
+--- a/projects/miopen/test/gtest/handle_test.cpp
++++ b/projects/miopen/test/gtest/handle_test.cpp
+@@ -167,7 +167,8 @@ static void test_arch_name()
+     const auto known_arch = {"gfx908",  "gfx90a",  "gfx906",  "gfx900",  "gfx942",
+                              "gfx950",  "gfx803",  "gfx1030", "gfx1031", "gfx1100",
+                              "gfx1101", "gfx1102", "gfx1103", "gfx1150", "gfx1151",
+-                             "gfx1152", "gfx1153", "gfx1200", "gfx1201", "gfx1250"};
++                             "gfx1152", "gfx1153", "gfx1200", "gfx1201", "gfx1250",
++                             "gfx90c",  "gfx1036"};
+ 
+     const auto this_arch = h.GetDeviceName();
+ 
+-- 
+2.43.0
+

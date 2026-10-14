@@ -1,0 +1,73 @@
+From 8730c5334cb48865be0593372748f1224504490d Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] fix(clr): memory pool VM heap on Windows APUs and its failure
+ path
+
+On Windows the ROCr thunk backs VMM physical memory with the device-local
+heap, which on an APU is only the small VRAM carve-out. The memory pool VM
+heap commits 128 MiB physical chunks from it, so hipMallocAsync fails long
+before the reported memory is used up. Use the plain pool there, as PAL does.
+
+The VM heap's failure path also frees a block that is still linked into the
+busy list (TheRock#7988), after which the heap corrupts itself (SEH floods,
+garbage sizes, hangs). Undo the busy list insertion and the free_size_ update
+and release committed chunks instead; FreeBlock() also merges the block back
+into its neighbour. This part applies to all OSes.
+
+Checked on gfx90c and gfx1036 (Windows ROCr): hipsparse 22,207/22,207 and
+rocsparse 18,642/18,642 with default settings (before: OOM, SEH, timeouts).
+---
+ projects/clr/rocclr/device/rocm/rocdevice.cpp | 9 +++++++++
+ projects/clr/rocclr/platform/vmheap.cpp       | 8 ++++++--
+ 2 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/projects/clr/rocclr/device/rocm/rocdevice.cpp b/projects/clr/rocclr/device/rocm/rocdevice.cpp
+index 68aaebc487..adc5dffd2b 100644
+--- a/projects/clr/rocclr/device/rocm/rocdevice.cpp
++++ b/projects/clr/rocclr/device/rocm/rocdevice.cpp
+@@ -1297,6 +1297,15 @@ bool Device::populateOCLDeviceConstants() {
+ 
+   if (isAPU_) {
+     info_.hostUnifiedMemory_ = 1;
++#if defined(_WIN32)
++    // The Windows thunk backs VMM physical memory with the device-local heap, which on an APU is
++    // only the small VRAM carve-out. The memory pool VM heap commits 128 MiB physical chunks from
++    // it, so hipMallocAsync fails long before the reported memory is used up. Use the plain pool
++    // there, as PAL does.
++    if (flagIsDefault(DEBUG_HIP_MEM_POOL_VMHEAP)) {
++      DEBUG_HIP_MEM_POOL_VMHEAP = false;
++    }
++#endif
+   }
+ 
+   if (settings().enableLocalMemory_ && gpuvm_segment_.handle != 0) {
+diff --git a/projects/clr/rocclr/platform/vmheap.cpp b/projects/clr/rocclr/platform/vmheap.cpp
+index 4dca6cf8fc..10102616c5 100644
+--- a/projects/clr/rocclr/platform/vmheap.cpp
++++ b/projects/clr/rocclr/platform/vmheap.cpp
+@@ -287,7 +287,9 @@ HeapBlock* VmHeap::AllocBlock(size_t un_size) {
+       InsertBlock(&busy_list_, walk);
+       free_size_ -= size;
+       if (!MapPhysMemory(walk->Offset(), size)) {
+-        free(walk);
++        // Undo the busy list insertion and the free_size_ update above, and release any
++        // chunks MapPhysMemory committed before it ran out of physical memory.
++        FreeBlock(walk);
+         return nullptr;
+       }
+       return walk;
+@@ -303,7 +305,9 @@ HeapBlock* VmHeap::AllocBlock(size_t un_size) {
+     InsertBlock(&busy_list_, newblock);
+     free_size_ -= size;
+     if (!MapPhysMemory(newblock->Offset(), size)) {
+-      free(newblock);
++      // Same rollback as above. FreeBlock() also merges the block back into its
++      // neighbour, undoing the SplitBlock().
++      FreeBlock(newblock);
+       return nullptr;
+     }
+     return newblock;
+-- 
+2.43.0
+

@@ -1,0 +1,139 @@
+From 475c0eda7586b5e56bb631153d4c2656398f6f58 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Fri, 9 Oct 2026 12:00:00 -0500
+Subject: [PATCH] fix(miopen): honor groups in the fused direct convolution
+ kernel
+
+ConvHipDirectFwdFused (MIOpenConvDirBatchNormActivHip.cpp) computes grouped
+convolutions as if they were ungrouped: each output channel accumulates all
+C input channels and indexes the [K][C/G][R][S] weights with a C-sized
+stride, which gives wrong results and reads past the weight buffer.
+
+Restrict each output channel to its group's C/G input channels and use the
+grouped weight layout.
+
+Checked on Linux gfx908: hipDNN grouped conv+bias+activation FAIL -> OK, the
+ungrouped control unchanged; hipDNN MIOpen smoke 1329 pass / 2 fail -> 1331 / 0.
+---
+ .../MIOpenConvDirBatchNormActivHip.cpp        | 46 +++++++++++++++++--
+ 1 file changed, 41 insertions(+), 5 deletions(-)
+
+diff --git a/projects/miopen/src/kernels/MIOpenConvDirBatchNormActivHip.cpp b/projects/miopen/src/kernels/MIOpenConvDirBatchNormActivHip.cpp
+index aa8c0ac4120..9bea3c8c2cc 100644
+--- a/projects/miopen/src/kernels/MIOpenConvDirBatchNormActivHip.cpp
++++ b/projects/miopen/src/kernels/MIOpenConvDirBatchNormActivHip.cpp
+@@ -128,6 +128,14 @@
+ #define uniform(x) (x)
+ #endif
+ 
++#ifdef GRP_MOD_ENABLE
++#if MLO_DIR_FORWARD == 0
++#error "GRP_MOD_ENABLE is implemented for the forward direction only"
++#endif
++#define MLO_GRPWISE_N_OUTPUTS (MLO_N_OUTPUTS / MLO_GROUP_COUNTS)
++#define MLO_GRPWISE_N_INPUTS (MLO_N_INPUTS / MLO_GROUP_COUNTS)
++#endif
++
+ // Math helper functions (HIP equivalents of math_ops.h)
+ inline __device__ uint iDiv_legacy(uint v, uint d)
+ {
+@@ -475,8 +483,14 @@ extern "C" __global__ void __launch_bounds__(MLO_GRP_SZ0) MIOpenConvUniBatchNorm
+     uint alu_tl0 = alu_out_id & (MLO_ALU_VTILE0 - 1);
+ #endif
+ 
++#ifdef GRP_MOD_ENABLE
++    uint ig          = o_pack / MLO_STACK_PERGROUP;
++    uint within_ig   = o_pack % MLO_STACK_PERGROUP;
++    uint o_map_plane = ig * MLO_GROUP_TILES + within_ig * MLO_N_OUT_TILES_PERSTACK;
++#else
+     uint o_map_plane =
+         o_pack * MLO_N_OUT_TILES_PERSTACK; // first output maps index per full ALU plane stack
++#endif
+     uint o_map_base = alu_out_plane_id * MLO_N_OUT_TILES; // local output map offset
+     uint o_map      = o_map_plane + o_map_base;           // output map index per ALU plane
+     uint b_index    = b_pack * MLO_N_STACKS;
+@@ -520,13 +534,23 @@ extern "C" __global__ void __launch_bounds__(MLO_GRP_SZ0) MIOpenConvUniBatchNorm
+     // base offset to read data from local input data
+     uint in_stg_off = stack * MLO_IN_LCL_PERSTACK_SZ + (y_in_lcl)*MLO_IN_LCL_WIDTH + x_in_lcl;
+ 
+-    uint in_off = b_index * MLO_IN_BATCH_STRIDE;
++#ifdef GRP_MOD_ENABLE
++    // Only this group's C/G input channels; weights are [K][C/G][R][S].
++    const uint ic_begin = MLO_GRPWISE_N_INPUTS * ig;
++    const uint ic_end   = MLO_GRPWISE_N_INPUTS * (ig + 1);
++    uint in_off         = ic_begin * MLO_IN_CHANNEL_STRIDE + b_index * MLO_IN_BATCH_STRIDE;
++    uint wei_off        = __mul24(o_map_plane, (uint)(MLO_GRPWISE_N_INPUTS * MLO_FILTER_SZ));
++#else
++    const uint ic_begin = 0;
++    const uint ic_end   = MLO_N_INPUTS;
++    uint in_off         = b_index * MLO_IN_BATCH_STRIDE;
+ 
+ #if MLO_DIR_FORWARD == 1
+     uint wei_off = __mul24(o_map_plane, (uint)(MLO_N_INPUTS * MLO_FILTER_SZ));
+ #else
+     uint wei_off = __mul24(o_map_plane, (uint)MLO_FILTER_SZ);
+ #endif
++#endif
+ 
+ #if MLO_LARGE_MAP == 0
+     for(uint i = lcl_id; i < MLO_IN_LCL_SZ; i += MLO_GRP_SZ)
+@@ -540,7 +564,7 @@ extern "C" __global__ void __launch_bounds__(MLO_GRP_SZ0) MIOpenConvUniBatchNorm
+         pvt_accum[i] = 0;
+     }
+ 
+-    for(uint ic = 0; ic < MLO_N_INPUTS; ic += MLO_N_IN_TILES_PERSTACK,
++    for(uint ic = ic_begin; ic < ic_end; ic += MLO_N_IN_TILES_PERSTACK,
+              in_off += MLO_IN_CHANNEL_STRIDE * MLO_N_IN_TILES_PERSTACK,
+              wei_off += MLO_N_IN_TILES_PERSTACK * MLO_FILTER_SZ
+ #if MLO_DIR_FORWARD == 0
+@@ -573,7 +597,9 @@ extern "C" __global__ void __launch_bounds__(MLO_GRP_SZ0) MIOpenConvUniBatchNorm
+             for(uint i_c = 0; i_c < MLO_N_IN_TILES_PERSTACK;
+                 ++i_c, in_off2 += MLO_IN_CHANNEL_STRIDE, in_lcl_off2 += MLO_IN_LCL_TILE_SZ)
+             {
+-#if MLO_INPUTS_ALIGNED == 0
++#ifdef GRP_MOD_ENABLE
++                vis &= (ic + i_c < ic_end);
++#elif MLO_INPUTS_ALIGNED == 0
+                 vis &= (ic + i_c < MLO_N_INPUTS);
+ #endif
+ 
+@@ -622,7 +648,9 @@ extern "C" __global__ void __launch_bounds__(MLO_GRP_SZ0) MIOpenConvUniBatchNorm
+             vis &= (b_index + i_b < MLO_BATCH_SZ);
+ #endif
+ 
+-#if MLO_INPUTS_ALIGNED == 0
++#ifdef GRP_MOD_ENABLE
++            vis &= (ic + i_c < ic_end);
++#elif MLO_INPUTS_ALIGNED == 0
+             vis &= (ic + i_c < MLO_N_INPUTS);
+ #endif
+             uint in_off2     = in_off + i_b * MLO_IN_BATCH_STRIDE + i_c * MLO_IN_CHANNEL_STRIDE;
+@@ -678,8 +706,14 @@ extern "C" __global__ void __launch_bounds__(MLO_GRP_SZ0) MIOpenConvUniBatchNorm
+             uint lcl_o = i / (MLO_N_IN_TILES_PERSTACK * MLO_FILTER_SZ);
+             uint gbl_i = i & ((MLO_N_IN_TILES_PERSTACK * MLO_FILTER_SZ) - 1);
+ #endif
++#ifdef GRP_MOD_ENABLE
++            uint gbl_we_off   = wei_off + lcl_o * MLO_GRPWISE_N_INPUTS * MLO_FILTER_SZ + gbl_i;
++            bool within_range = gbl_we_off < (MLO_GRPWISE_N_OUTPUTS * MLO_GRPWISE_N_INPUTS *
++                                              (ig + 1) * MLO_FILTER_SZ);
++#else
+             uint gbl_we_off   = wei_off + lcl_o * MLO_N_INPUTS * MLO_FILTER_SZ + gbl_i;
+             bool within_range = gbl_we_off < (MLO_N_OUTPUTS * MLO_N_INPUTS * MLO_FILTER_SZ);
++#endif
+ 
+             gbl_we_off = (within_range) ? gbl_we_off : 0;
+             FLOAT wei  = weights[gbl_we_off];
+@@ -781,7 +815,9 @@ extern "C" __global__ void __launch_bounds__(MLO_GRP_SZ0) MIOpenConvUniBatchNorm
+ #endif
+ #endif
+ 
+-#if MLO_OUTPUTS_ALIGNED == 0
++#ifdef GRP_MOD_ENABLE
++            if(o_map + o < MLO_GRPWISE_N_OUTPUTS * (ig + 1))
++#elif MLO_OUTPUTS_ALIGNED == 0
+             if(o_map + o < MLO_N_OUTPUTS)
+ #endif
+             {
+-- 
+2.43.0
+

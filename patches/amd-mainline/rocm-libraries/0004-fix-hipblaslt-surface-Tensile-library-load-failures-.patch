@@ -1,0 +1,89 @@
+From f9784b02df1965039c8ef6f68d7d0781136c3f58 Mon Sep 17 00:00:00 2001
+From: GrecAndrei <GrecAndrei@users.noreply.github.com>
+Date: Thu, 9 Jul 2026 13:55:30 +0300
+Subject: [PATCH] fix(hipblaslt): surface Tensile library load failures to
+ stderr
+
+Previously MessagePack load errors such as "Enum not found! gfx1032"
+were only printed when Tensile debug printDataInit was enabled, so a
+present-but-unloadable TensileLibrary_lazy_*.dat looked like a silent
+nullptr with a generic "Could not load" message.
+
+Always print the underlying msgpack exception on load failure, and
+expand the rocblaslt host error with common causes (missing Processor
+enum, wrong arch, bad install, HIPBLASLT_TENSILE_LIBPATH).
+---
+ .../amd_detail/rocblaslt/src/tensile_host.cpp    | 16 ++++++++++++++--
+ .../tensilelite/src/msgpack/MessagePack.cpp      | 15 +++++++++++----
+ 2 files changed, 25 insertions(+), 6 deletions(-)
+
+diff --git a/projects/hipblaslt/library/src/amd_detail/rocblaslt/src/tensile_host.cpp b/projects/hipblaslt/library/src/amd_detail/rocblaslt/src/tensile_host.cpp
+index 60969844cbc..4e2fa0ff833 100644
+--- a/projects/hipblaslt/library/src/amd_detail/rocblaslt/src/tensile_host.cpp
++++ b/projects/hipblaslt/library/src/amd_detail/rocblaslt/src/tensile_host.cpp
+@@ -3171,8 +3171,20 @@ namespace
+                     tensileLibPath.string());
+ #endif
+                 if(!lib)
+-                    std::cerr << "\nrocblaslt error: Could not load " << tensileLibPath
+-                              << std::endl;
++                {
++                    std::cerr
++                        << "\nrocblaslt error: Could not load " << tensileLibPath
++                        << "\n"
++                        << "  Common causes:\n"
++                        << "  - Tensile Processor enum missing this GPU (e.g. gfx1031/1032/1034/1035):\n"
++                        << "    library file exists but fails to deserialize with "
++                           "'Enum not found! <gfx>'.\n"
++                        << "  - Library built for a different architecture than the running GPU.\n"
++                        << "  - Corrupt or incomplete TensileLibrary_lazy_*.dat install.\n"
++                        << "  Override search path with HIPBLASLT_TENSILE_LIBPATH if needed.\n"
++                        << "  See also: TensileLite msgpack load errors printed above "
++                           "(if any).\n";
++                }
+                 else
+                 {
+                     using MSL
+diff --git a/projects/hipblaslt/tensilelite/src/msgpack/MessagePack.cpp b/projects/hipblaslt/tensilelite/src/msgpack/MessagePack.cpp
+index b56f31d0463..9d49271d95c 100644
+--- a/projects/hipblaslt/tensilelite/src/msgpack/MessagePack.cpp
++++ b/projects/hipblaslt/tensilelite/src/msgpack/MessagePack.cpp
+@@ -24,6 +24,7 @@
+  *
+  *******************************************************************************/
+ 
++#include <iostream>
+ #include <Tensile/msgpack/MessagePack.hpp>
+ 
+ #include <Tensile/msgpack/Loading.hpp>
+@@ -366,8 +367,14 @@ namespace TensileLite
+         }
+         catch(std::runtime_error const& exc)
+         {
+-            if(Debug::Instance().printDataInit())
+-                std::cout << "Error loading msgpack data:\n" << exc.what() << std::endl;
++            // Always surface library-load failures: debug-gated logging previously
++            // hid actionable errors such as "Enum not found! gfx1032" when a
++            // Tensile .dat referenced a Processor enum value missing from the
++            // binary (common on consumer RDNA2). std::cerr is used so messages
++            // remain visible without TENSILE debug flags.
++            std::cerr << "TensileLite: failed to load msgpack library '"
++                      << filename << "':\n"
++                      << exc.what() << std::endl;
+ 
+             return nullptr;
+         }
+@@ -402,8 +409,8 @@ namespace TensileLite
+         }
+         catch(std::runtime_error const& exc)
+         {
+-            if(Debug::Instance().printDataInit())
+-                std::cout << "Error loading msgpack data:" << std::endl << exc.what() << std::endl;
++            std::cerr << "TensileLite: failed to load msgpack library data:\n"
++                      << exc.what() << std::endl;
+ 
+             return nullptr;
+         }
+-- 
+2.43.0
+
