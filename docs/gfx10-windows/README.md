@@ -24,11 +24,11 @@ based on TheRock `main` `248a92b` (2026-10-14) and carries patches with `fetch_s
 
 | failing job | signature | status on this branch |
 |---|---|---|
-| hip-tests (ROCR), 4 shards | ctest discovery crashes in `__hipRegisterFatBinary` (access violation / 0xc0000374) on V620 | open: reproduce on real RDNA2 (gfx1036 box), #4641 |
+| hip-tests (ROCR), 4 shards | ctest discovery crashes in `__hipRegisterFatBinary` (access violation / 0xc0000374) on V620 | reproduced on our box with only the gfx1201 dGPU visible: multi-adapter host memory bug, **fixed by rocm-systems 0008**. V620 runners are single-adapter, so their crash may differ: needs a V620 debug log and dump (#4641) |
 | hip-tests (PAL), 2 shards | `Unit_hipStreamValue_Wait_Blocking` hangs, GPU wedged, rest of shard times out | **excluded on Windows gfx103X-all** (as gfx110X already is); real fix: opt-in 0001 |
 | hipblaslt, hipblasltprovider | "Could not load TensileLibrary_lazy_gfx1030.dat", kpack kernel not found | **test jobs skipped** (no hipBLASLt kernels for gfx10, #1062); load failures now logged (rocm-libraries 0004) |
-| miopen (4 shards) | GPU_MultiMarginLoss FP32/FP16; ImplicitGemm WrW tolerance; bnorm regression | **MultiMarginLoss: expected fixed** (rocm-libraries 0002, LLP64; same failure fixed on gfx1036, 0/32 -> 32/32); ImplicitGemm/bnorm open (also fail on Linux gfx1030) |
-| miopenprovider | ConvolutionFwdPointwise fp32 nchw wrong results | open, rocm-libraries#12990 (also Linux) |
+| miopen (4 shards) | GPU_MultiMarginLoss FP32/FP16; ImplicitGemm WrW tolerance; bnorm regression | **MultiMarginLoss: expected fixed** (rocm-libraries 0002, LLP64; same failure fixed on gfx1036, 0/32 -> 32/32); ImplicitGemm WrW: **test tolerance fixed** (rocm-libraries 0005); bnorm FP32 open: backward spatial batchnorm precision on wave32, predates rocm-libraries#12889 (also Linux) |
+| miopenprovider | ConvolutionFwdPointwise fp32 nchw wrong results | these are grouped convs hitting `ConvHipDirectFwdFused`: **expected fixed by rocm-libraries 0001** (validated on gfx908; not re-run on gfx103X) |
 | rocfft (2 shards) | no failures, 60 min timeout | open: V620 speed; tier or timeout change |
 | hipsparse 1/3 | `spsv_csr_reuse_descr` f64 intermittent | open |
 
@@ -50,7 +50,9 @@ gfx9-specific.
 | rocm-libraries 0001 | MIOpen fused direct conv computes grouped convs as ungrouped | all GPUs this solver runs on | gfx9-win L5 |
 | rocm-libraries 0002 | MIOpen MultiMarginLoss `long` vs `int64_t` (LLP64) | matches the gfx1030 Windows MultiMarginLoss CI failures (fixed the same failure on gfx1036) | gfx9-win L4 |
 | rocm-libraries 0003 | MIOpen gtests throw `unknown_gpu` on uncharacterized archs | gfx1036 and other gfx10 iGPUs | gfx9-win L2 |
+| rocm-systems 0009 | since rocm-systems#11344 (`f36603ec78`, 2026-10-09) the dxg PM4 path waits for a packet index instead of the submission fence on adapters without platform atomics; every signal after a merged run stalls 30 s and reports an aperture violation | gfx1036 iGPU: `Unit_hipStreamCreateWithPriority*` 0/7 -> 11/13 (as PAL and pre-regression); still on rocm-systems `develop` | new, bisected over 193 commits on gfx1036 |
 | rocm-libraries 0004 | hipBLASLt silently returns nullptr when a Tensile library fails to load | turns the gfx1030 "Could not load TensileLibrary" failures into a stated cause | community: rocm-libraries#9219 (GrecAndrei, closed unmerged) |
+| rocm-libraries 0005 | MIOpen ImplicitGemm V4R1/V4R4 WrW tests use FLT_EPSILON on gfx103X; only gfx908/gfx90a get the relaxed tolerance | measured on gfx1036: 30x and 1.3x, within the existing 40x / 2x | new |
 | llvm-project 0001 | device-libs dot builtins on targets without dot instructions; fdot2 regression | **gfx1010 fdot2 regression; gfx1013 missing from the software lists** | gfx9-win C1 |
 | llvm-project 0002 | `llvm.trap` runs off when no trap handler is installed | the gfx1030 V620 ROCr log shows "SetTrapHandler rejected by KMD" | gfx9-win C2 |
 
@@ -90,14 +92,14 @@ workarounds and packaging. What it tells us:
 
 | # | item | source | target | notes |
 |---|---|---|---|---|
-| R1 | Reproduce and fix the hip-tests ROCr crash at `__hipRegisterFatBinary` | TheRock#4641, V620 logs | rocm-systems | needs real RDNA2; the gfx1036 box (10.6.177.171) is the first stop |
-| R2 | hipBLASLt for gfx103X: add gfx1031-1036 to the tensilelite `Processor` enum and supported architectures, then drop the exclude | rocm-libraries#9075, #9076 (closed unmerged; conflict at this pin, need porting) | rocm-libraries, TheRock | also needs kernels/logic; large |
+| R1 | Reproduce and fix the hip-tests ROCr crash at `__hipRegisterFatBinary` | TheRock#4641, V620 logs | rocm-systems | two-GPU case fixed (0008); found and fixed a PM4 fence regression on the way (0009); V620 single-adapter crash still needs V620 logs |
+| R2 | hipBLASLt for gfx103X: add gfx1031-1036 to the tensilelite `Processor` enum and supported architectures, then drop the exclude | rocm-libraries#9075, #9076 | rocm-libraries, TheRock | **ported** (6 patches incl. fp32/fp64 bring-up logic from upstream gfx1103 non-matrix files); builds on Linux for gfx1030/1031; held off the branch until run on hardware; fp16/bf16/int8 have no kernels |
 | R3 | Gate PyTorch TunableOp / `_int_mm` hipBLASLt use on supported archs, rocBLAS int8 fallback | TheRock#8782; vallicgrr/rx6800-comfyui | ROCm/pytorch | |
 | R4 | rocBLAS `asm_full` logic for gfx101X | jc1122/rocblas-gfx1010 (no license), likelovewant (GPL-3.0) | rocm-libraries | **cannot copy either: license**; regenerate (navi21-derived, drop I8) and validate |
 | R5 | CK on RDNA1: `__gfx101__` buffer resource dword, FMAC-only | jc1122/pytorch-gfx1010 (no license) | rocm-libraries | reimplement; CK is excluded on gfx10 anyway |
 | R6 | rocBLAS GEMM invalid launch grid (M about 12M, N=1, K=8) on gfx1030 | vallicgrr lab report | rocm-libraries | reproduce first |
 | R7 | rocPRIM select/unique/scan reported broken on gfx1010 | jc1122/pytorch-gfx1010 | rocm-libraries | unverified; no gfx101X runner |
-| R8 | MIOpen ImplicitGemm WrW tolerance, bnorm regression, ConvFwdPointwise (#12990) on gfx1030 | rockrel logs | rocm-libraries | fail on Linux too |
+| R8 | MIOpen bnorm FP32 regression on gfx103X | rockrel logs, gfx1036 repro | rocm-libraries | ImplicitGemm (0005) and #12990 (0001) addressed; bnorm needs an MIOpen rebuild to work on |
 | R9 | Windows test runner for gfx101X; re-enable gfx103X runners with this branch's exclusions | therock-ci-config | infra | |
 | R10 | SDPA for gfx10 | aotriton #1925; 2kiss/flash-attention-rdna2 (Apache-2.0) | aotriton / pytorch | evaluate |
 | R11 | `SUPPORTED_GPUS.md` / `windows_support.md` accuracy (Release Ready vs test evidence; ROCr marked unsupported) | this survey | TheRock docs | |
@@ -107,5 +109,6 @@ workarounds and packaging. What it tells us:
 - All carried patches and the opt-in prototypes apply with plain `git am` at the pins of TheRock `248a92b`
   (rocm-systems `b2d4b1ec26`, rocm-libraries `3dc098eb2d`, amd-llvm `bdc35841c9`).
 - The patches inherited from gfx9-win were validated on gfx90c and gfx1036 at earlier pins (see the gfx9-win
-  branch, `docs/gfx9-windows/CATALOG.md`). Not yet rebuilt at these pins; no gfx10 run of this branch yet.
+  branch, `docs/gfx9-windows/CATALOG.md`). Not yet rebuilt at these pins as a whole.
+- 2026-10-15: the rocm-systems carry (0001-0008) plus 0009 was built at the `b2d4b1ec26` pin and run on the gfx1036 iGPU and gfx1201 dGPU (ROCr): hip-tests discovery OK on every device combination, StreamCreateWithPriority 11/13 (matches PAL). Full hip-tests at this pin: pending.
 - Hardware we have: gfx1036 iGPU + gfx1201 dGPU on 10.6.177.171 (Windows 11). No discrete RDNA2 or any RDNA1.
