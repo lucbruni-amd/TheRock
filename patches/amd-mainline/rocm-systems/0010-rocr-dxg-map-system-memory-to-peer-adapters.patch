@@ -1,7 +1,7 @@
-From 1ecc44e6a22b393cc37ec0bb1874a96792db53bf Mon Sep 17 00:00:00 2001
+From 7bae027009c0f741317f2fdda93bae7c195bc49d Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Tue, 13 Oct 2026 11:52:09 -0400
-Subject: [PATCH] fix(rocr): map dxg host memory into every GPU adapter
+Subject: [PATCH 10/15] fix(rocr): map dxg host memory into every GPU adapter
 
 ROCr on Windows hangs on the first operation of every GPU except the first
 enumerated one (e.g. RX 9070 XT next to a Ryzen gfx1036 iGPU).
@@ -74,7 +74,7 @@ index 9cafa05877..50fb619eb6 100644
    uint32_t mapping_count_ = 1;
    HsaWddmSurfaceMetadata surface_metadata_{}; // stable storage for swizzle metadata blob
 diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/memory.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/memory.cpp
-index f0cc346e0d..f8e149685d 100644
+index f66d0b9825..da07af2e2d 100644
 --- a/projects/rocr-runtime/libhsakmt/src/dxg/memory.cpp
 +++ b/projects/rocr-runtime/libhsakmt/src/dxg/memory.cpp
 @@ -867,6 +867,17 @@ HSAKMT_STATUS HSAKMTAPI hsaKmtMapMemoryToGPUNodes(

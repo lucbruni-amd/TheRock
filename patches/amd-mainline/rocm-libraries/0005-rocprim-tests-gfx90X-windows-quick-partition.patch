@@ -1,8 +1,8 @@
-From 995dcec96bcaafd4eba30a8506756e501eae0e7e Mon Sep 17 00:00:00 2001
+From 9bdccd64fb552d0bb83433173359aa096c042aab Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] test(rocprim): keep large partition cases out of the gfx90X
- Windows quick tier
+Subject: [PATCH 5/5] test(rocprim): keep large partition cases out of the
+ gfx90X Windows quick tier
 
 test_device_partition passes on gfx90c (85/85) but takes about 375 s against
 the 300 s quick-tier timeout. The 1 KiB-element cases move about 1 GiB per

@@ -1,7 +1,7 @@
-From 37067abeb43ff4c8eb0e3198df68d174b7aee64c Mon Sep 17 00:00:00 2001
+From af2e4e3eb90ddd01f99ab661b6a5554562b20f75 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Tue, 13 Oct 2026 16:20:43 -0400
-Subject: [PATCH] gfx9-win: EXPERIMENTAL dxg-pm4-honor-cu-mask
+Subject: [PATCH 3/4] gfx9-win: EXPERIMENTAL dxg-pm4-honor-cu-mask
 
 Opt-in prototype, not for upstream as is.
 
@@ -19,8 +19,8 @@ CWSR members; context only). Not rebuilt or retested after the rebase.
  .../libhsakmt/include/impl/wddm/cmd_util.h    |  1 +
  .../libhsakmt/include/impl/wddm/queue.h       |  2 +
  .../libhsakmt/src/dxg/wddm/cmd_util.cpp       |  8 ++--
- .../libhsakmt/src/dxg/wddm/queue.cpp          | 39 ++++++++++++++++++-
- 4 files changed, 44 insertions(+), 6 deletions(-)
+ .../libhsakmt/src/dxg/wddm/queue.cpp          | 38 ++++++++++++++++++-
+ 4 files changed, 43 insertions(+), 6 deletions(-)
 
 diff --git a/projects/rocr-runtime/libhsakmt/include/impl/wddm/cmd_util.h b/projects/rocr-runtime/libhsakmt/include/impl/wddm/cmd_util.h
 index 3c2b49562c..73fc5e4a30 100644
@@ -35,7 +35,7 @@ index 3c2b49562c..73fc5e4a30 100644
  
  class CmdUtil {
 diff --git a/projects/rocr-runtime/libhsakmt/include/impl/wddm/queue.h b/projects/rocr-runtime/libhsakmt/include/impl/wddm/queue.h
-index 1691a67eb2..844eb1030b 100644
+index c9b4ea3679..790f07ee95 100644
 --- a/projects/rocr-runtime/libhsakmt/include/impl/wddm/queue.h
 +++ b/projects/rocr-runtime/libhsakmt/include/impl/wddm/queue.h
 @@ -144,6 +144,8 @@ public:
@@ -67,18 +67,10 @@ index ae1bb3eaa6..1e743bbb0d 100644
    dispatch.resource_regs.compute_tmpring_size = pInfo->pAmdQueue->compute_tmpring_size;
  
 diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
-index d8ffeaf6e0..7ef09895e3 100644
+index b2d31c0710..ffac44deec 100644
 --- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
 +++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
-@@ -40,6 +40,7 @@
- //
- ////////////////////////////////////////////////////////////////////////////////
- 
-+#include <algorithm>
- #include <cstring>
- #include <cinttypes>
- #include <cstddef>
-@@ -167,10 +168,43 @@ hsa_status_t WDDMQueue::SetPriority(hsa_amd_queue_priority_t priority) {
+@@ -168,10 +168,43 @@ hsa_status_t WDDMQueue::SetPriority(hsa_amd_queue_priority_t priority) {
    return HwsInit();
  }
  
@@ -124,7 +116,7 @@ index d8ffeaf6e0..7ef09895e3 100644
      return HSA_STATUS_SUCCESS;
    } else {
      return HSA_STATUS_ERROR;
-@@ -755,6 +789,7 @@ hsa_status_t ComputeQueue::KernelDispatchAqlToPm4(char* cpu, hsa_kernel_dispatch
+@@ -812,6 +845,7 @@ hsa_status_t ComputeQueue::KernelDispatchAqlToPm4(char* cpu, hsa_kernel_dispatch
    info.scratchSizePerWave = ScratchSizePerWave();
    memset(info.scratchBaseOffset, 0, sizeof(info.scratchBaseOffset));
    info.offsetCnt = 0;

@@ -1,7 +1,7 @@
-From 81809ea366eacf4bb2c9459df5ee90b10a9d372c Mon Sep 17 00:00:00 2001
+From 616ab6bafa68e6c19328314e7fa842601f78a02e Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] fix(rocr): invalidate the vector L1 in the gfx9 dxg
+Subject: [PATCH 06/15] fix(rocr): invalidate the vector L1 in the gfx9 dxg
  ACQUIRE_MEM
 
 The dxg thunk's gfx9 ACQUIRE_MEM only sets SH_KCACHE_VOL_ACTION_ENA. The

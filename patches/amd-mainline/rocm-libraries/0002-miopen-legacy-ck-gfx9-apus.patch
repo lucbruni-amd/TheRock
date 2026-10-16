@@ -1,7 +1,8 @@
-From 3b15aecd47f8e6c82553a1da74812bc6d2a33629 Mon Sep 17 00:00:00 2001
+From 089c457a7917e64896fe077182db228f8418bb6a Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] fix(miopen): map gfx9 APUs to the gfx900 path in legacy CK
+Subject: [PATCH 2/5] fix(miopen): map gfx9 APUs to the gfx900 path in legacy
+ CK
 
 The legacy composable_kernel config.hpp has no CK_AMD_GPU_GFX* case for
 gfx902, gfx909 or gfx90c and stops with "#error No CK_AMD_GPU_GFX* macro

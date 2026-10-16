@@ -1,7 +1,7 @@
-From b441ed3cf0d9836d6a5cf87c8007cc988c4ad9a5 Mon Sep 17 00:00:00 2001
+From 107948be00a0c4e778fc664d0a3df09cff036713 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] fix(AMDGPU): end the wave after llvm.trap when no trap
+Subject: [PATCH 2/2] fix(AMDGPU): end the wave after llvm.trap when no trap
  handler runs
 
 llvm.trap (__builtin_trap, a failed device assert) lowers to a bare
@@ -30,10 +30,10 @@ and the GPU stays healthy.
  10 files changed, 226 insertions(+), 75 deletions(-)
 
 diff --git a/llvm/docs/AMDGPUUsage.rst b/llvm/docs/AMDGPUUsage.rst
-index 804a14298c83..0a59c1fd84e3 100644
+index 221b9d25e2b7..ac52b23d84da 100644
 --- a/llvm/docs/AMDGPUUsage.rst
 +++ b/llvm/docs/AMDGPUUsage.rst
-@@ -20235,6 +20235,11 @@ supports the ``s_trap`` instruction. For usage see:
+@@ -20243,6 +20243,11 @@ supports the ``s_trap`` instruction. For usage see:
  - :ref:`amdgpu-trap-handler-for-amdhsa-os-v3-table`
  - :ref:`amdgpu-trap-handler-for-amdhsa-os-v4-onwards-table`
  
@@ -129,7 +129,7 @@ index 0305c789da6f..fcb58d68be3a 100644
                           MachineIRBuilder &B) const;
  
 diff --git a/llvm/lib/Target/AMDGPU/SIISelLowering.cpp b/llvm/lib/Target/AMDGPU/SIISelLowering.cpp
-index 9fdb493e13b5..cb1f5e0648f2 100644
+index 2bae332933be..553a330e43af 100644
 --- a/llvm/lib/Target/AMDGPU/SIISelLowering.cpp
 +++ b/llvm/lib/Target/AMDGPU/SIISelLowering.cpp
 @@ -9256,6 +9256,11 @@ SDValue SITargetLowering::lowerXMUL_LOHI(SDValue Op, SelectionDAG &DAG) const {

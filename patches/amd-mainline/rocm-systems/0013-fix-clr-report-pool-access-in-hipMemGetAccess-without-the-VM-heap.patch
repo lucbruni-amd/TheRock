@@ -1,8 +1,8 @@
-From 00ebe9edbede50955a68db66d3af349293e89fc1 Mon Sep 17 00:00:00 2001
+From a4141db801f5511053bd133a04778f70fde91afc Mon Sep 17 00:00:00 2001
 From: Luca Bruni <lucbruni@amd.com>
 Date: Fri, 16 Oct 2026 09:35:24 -0400
-Subject: [PATCH] fix(clr): report pool access in hipMemGetAccess without the
- VM heap
+Subject: [PATCH 13/15] fix(clr): report pool access in hipMemGetAccess without
+ the VM heap
 
 Memory pool allocations made without the VM heap (Windows APUs after the
 VM heap was disabled there, IPC pools) are plain device allocations, not

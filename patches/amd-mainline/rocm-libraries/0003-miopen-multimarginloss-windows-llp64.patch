@@ -1,7 +1,8 @@
-From cf72631b112ee5f7c9d1a89cf799b36a6b7ed058 Mon Sep 17 00:00:00 2001
+From bd71c3be21ffdd1cd12ae14afa5bf987f8479f73 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] fix(miopen): use int64_t for the MultiMarginLoss p parameter
+Subject: [PATCH 3/5] fix(miopen): use int64_t for the MultiMarginLoss p
+ parameter
 
 The invoke params declare p as long, but the kernel takes int64_t. long is
 32-bit on Windows (LLP64), so the kernel argument layout does not match and

@@ -1,8 +1,8 @@
-From 5c4542944d8a27f3890876c2f6ee586be68bab54 Mon Sep 17 00:00:00 2001
+From 109ffe43e27ff31f06f4d3da716ea5351d5b7ae0 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] fix(clr): do not wait for the GPU while a Windows process
- exits
+Subject: [PATCH 05/15] fix(clr): do not wait for the GPU while a Windows
+ process exits
 
 During ExitProcess, Windows terminates every other thread before it runs
 DLL_PROCESS_DETACH and the CRT atexit callbacks of the DLLs being unloaded.
@@ -21,7 +21,7 @@ nightly). Reproduced and fixed on gfx90c and gfx1036.
  2 files changed, 20 insertions(+)
 
 diff --git a/projects/clr/hipamd/src/hip_platform.cpp b/projects/clr/hipamd/src/hip_platform.cpp
-index 4641de3bc4..4079aad90f 100644
+index 76e7efed86..c1c146e47a 100644
 --- a/projects/clr/hipamd/src/hip_platform.cpp
 +++ b/projects/clr/hipamd/src/hip_platform.cpp
 @@ -331,7 +331,17 @@ void __hipRegisterTexture(

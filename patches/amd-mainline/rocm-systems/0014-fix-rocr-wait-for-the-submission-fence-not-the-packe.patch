@@ -1,0 +1,54 @@
+From 9d614c213a706c3f777a3c6e3f397a50f8cf8cd0 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <luca.bruni@amd.com>
+Date: Wed, 14 Oct 2026 20:04:35 -0400
+Subject: [PATCH 14/15] fix(rocr): wait for the submission fence, not the
+ packet index, in the dxg PM4 path
+
+On adapters without platform atomics (for example the Ryzen gfx1036 iGPU),
+ComputeQueue::Process() completes a packet's signal
+from the CPU after waiting for its submission's fence. Since #11344 that
+wait compares the fence value with cmdbuf_aql_frame_write_index. Fence values
+count submissions (sync_point advances by one per Submit()), while the frame
+write index counts AQL packets, and a merged run puts several packets in one
+submission. After the first merged run the expected value is never reached:
+every later signal wait spins until the 30 s timeout, which then reports
+HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION (or hangs forever with
+ROCR_DISABLE_WAIT_TIMEOUT=1).
+
+Wait for sync_point again, as before #11344, and keep its fault timeout.
+
+Found by bisecting Unit_hipStreamCreateWithPriority on gfx1036 (Windows,
+ROCr): passes before f36603ec78, fails from it on.
+---
+ projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
+index 1badcf6f1b..7499afa4ec 100644
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
+@@ -1175,13 +1175,19 @@ hsa_status_t ComputeQueue::Process(void) {
+ 
+     // CPU wait for GPU fence, and cpu update the signal.
+     if (!platform_atomic_support_ && signal_addr_) {
++      // Submit() has advanced sync_point to the fence value it issued, which is
++      // the submission carrying the packet that owns signal_addr_. Fence values
++      // count submissions, not packets: a merged run puts several packets in one
++      // submission, so comparing against cmdbuf_aql_frame_write_index waits for a
++      // fence value that is never signaled.
++      const uint64_t fence_value = sync_point;
+       constexpr int kFaultTimeoutMs = 30000;
+       auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kFaultTimeoutMs);
+-      while (*sync_addr < cmdbuf_aql_frame_write_index) {
++      while (LoadSyncValue(sync_addr) < fence_value) {
+         if (!dxg_runtime->disable_wait_timeout_ &&
+             std::chrono::steady_clock::now() >= deadline) {
+           pr_err("GPU fence timeout after %dms — possible device fault (sync_addr=%" PRIu64
+-                 " expected=%" PRIu64 ")\n", kFaultTimeoutMs, *sync_addr, cmdbuf_aql_frame_write_index);
++                 " expected=%" PRIu64 ")\n", kFaultTimeoutMs, LoadSyncValue(sync_addr), fence_value);
+           return static_cast<hsa_status_t>(HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION);
+         }
+         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+-- 
+2.43.0
+

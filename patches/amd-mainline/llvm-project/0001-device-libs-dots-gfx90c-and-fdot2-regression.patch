@@ -1,8 +1,8 @@
-From 3c7baf84b3134241e89fc7d04518f0f6f0bf9fd8 Mon Sep 17 00:00:00 2001
+From 4f85e9fd531098d9747f8c0a64ba428ca9a8a2b0 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] fix(device-libs): use software dot products where the target
- has no dot instructions
+Subject: [PATCH 1/2] fix(device-libs): use software dot products where the
+ target has no dot instructions
 
 The ockl dot builtins pick hardware instructions unless the ISA version is in
 the SWDOT/SWFDOT/SWIDOT2 lists. gfx90c (9012) and gfx1013 (10103) have no dot

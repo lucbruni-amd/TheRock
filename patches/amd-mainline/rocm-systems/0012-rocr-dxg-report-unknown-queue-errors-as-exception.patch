@@ -1,7 +1,7 @@
-From 66527567b47610b50431f9c73a09fae71eadce37 Mon Sep 17 00:00:00 2001
+From 43f6dfd8798621ec8c839092073aa7a7aafe683f Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Tue, 13 Oct 2026 16:18:01 -0400
-Subject: [PATCH] fix(rocr): report unknown dxg queue errors as
+Subject: [PATCH 12/15] fix(rocr): report unknown dxg queue errors as
  HSA_STATUS_ERROR_EXCEPTION
 
 ComputeQueue::HandleError() initializes the queue-inactive signal value to -1
@@ -17,10 +17,10 @@ fatal queue error.
  1 file changed, 5 insertions(+), 1 deletion(-)
 
 diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
-index 5abcaa1e3d..d8ffeaf6e0 100644
+index 96b1254da4..1badcf6f1b 100644
 --- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
 +++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
-@@ -180,7 +180,11 @@ hsa_status_t WDDMQueue::SetCuMask(uint32_t cu_mask_count, const uint32_t* queue_
+@@ -181,7 +181,11 @@ hsa_status_t WDDMQueue::SetCuMask(uint32_t cu_mask_count, const uint32_t* queue_
  // ================================================================================================
  void ComputeQueue::HandleError(hsa_status_t status) {
    hsa_signal_t sig = amd_queue_rocr_->queue_inactive_signal;

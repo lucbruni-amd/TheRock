@@ -1,7 +1,7 @@
-From c3361b355ea6277298048c2bbeeb623b57c028da Mon Sep 17 00:00:00 2001
+From 63748dd940b0def4d17bc3fc5e0809eafd07e6d9 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] test(hip-tests): 64-bit lane masks in warp reduce tests
+Subject: [PATCH 09/15] test(hip-tests): 64-bit lane masks in warp reduce tests
 
 The warp reduce and rtc reduce tests build lane masks with (1ul << lane),
 which is 32-bit on Windows (LLP64), so wave64 lanes 32-63 are dropped from

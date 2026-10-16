@@ -1,7 +1,7 @@
-From 77c023f0d34ed05dfa69952ced24132a6133c38a Mon Sep 17 00:00:00 2001
+From 202b132ac39089bd9fc87f2728e6866f8e2bd7ec Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Tue, 13 Oct 2026 16:18:01 -0400
-Subject: [PATCH] fix(rocr): allocate the gfx9 dxg user queue in the UMD
+Subject: [PATCH 11/15] fix(rocr): allocate the gfx9 dxg user queue in the UMD
 
 Every kernel submit on gfx9 under Windows ROCr fails with
 STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE (0xc01e0200).

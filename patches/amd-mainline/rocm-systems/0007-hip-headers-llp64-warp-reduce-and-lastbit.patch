@@ -1,7 +1,7 @@
-From 8ace9a41bf23b842ba0b88228a78ae389aee8198 Mon Sep 17 00:00:00 2001
+From e866a8ec1d700af875594a688304d38bdfe8e860 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] fix(clr): 64-bit lane masks in HIP headers on Windows
+Subject: [PATCH 07/15] fix(clr): 64-bit lane masks in HIP headers on Windows
 
 The generic warp reduce/scan path computes (1ul << laneId) and
 __lastbit_u32_u64 uses __builtin_ctzl. unsigned long is 32-bit on Windows

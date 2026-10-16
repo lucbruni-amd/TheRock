@@ -42,6 +42,8 @@ cross-queue waits (section 7; 2 of them TheRock ignores on gfx110X).
 | 11 | `0010-rocr-dxg-map-system-memory-to-peer-adapters.patch` | rocm-systems dxg thunk `memory.cpp`, `wddm/gpu_memory.{h,cpp}` | host (CPU-node) allocations are created on one WDDM adapter (`default_node`, always the first GPU) and `hsaKmtMapMemoryToGPUNodes` returned success for the other GPUs without mapping anything. Every GPU but the first gets unmapped kernarg/staging/host-pool VAs and hangs on its first operation. Exposed by the 2026-07-10 wkmi update (rocm-systems 5190f14b56), which enumerates gfx103X APUs under ROCr, so the iGPU became node 1 (bisected 7.15.0a20260711 good, 0713 bad). Fix: mirror each kSystem allocation onto every requested peer adapter over the same CPU pages, at the same SVM address (already reserved on all adapters) | Windows ROCr, any multi-adapter system (common: Ryzen iGPU + dGPU); not gfx9-specific | gfx1036 + gfx1201: gfx1201 HANG -> OK; both GPUs in one process incl. cross-device via pinned host OK; both ownership orders OK; 300-iteration alloc/use/free stress 0 mismatches (stock 10.1 hangs); single-GPU gfx1100 unchanged. Built from the box's older source tree (ported line for line; the Lock2 line has no equivalent there) |
 
 | 9b | `0013-fix-clr-report-pool-access-in-hipMemGetAccess-without-the-VM-heap.patch` | rocm-systems CLR `hip_vm.cpp`, `hip_mempool_impl.*` | fix 9 turns the memory-pool VM heap off on Windows APUs, after which `hipMemGetAccess` on a pool allocation fails (it only asked for VMM access). Report the owning pool's access instead. Found by the gfx10-win full hip-tests run (`Contract_MemLocationPool_HipMemGetAccess_Default`) | Windows ROCr APUs; IPC pools on all OSes | gfx1036: 98/99 -> 99/99 mempool/access subset; gfx1201 99/99. Validated at the gfx10-win pin, applies clean here; not rebuilt at this pin |
+| 12 | `0014-fix-rocr-wait-for-the-submission-fence-not-the-packe.patch` (from gfx10-win 0009) | rocm-systems dxg thunk `wddm/queue.cpp` | since rocm-systems#11344 (f36603ec78, first in this branch's pin with the 2026-10-16 bump) the PM4 path waits for the AQL packet index instead of the submission fence. A merged run puts several packets in one submission, so every CPU-completed signal after one stalls until the 30 s fault timeout (adapters without platform atomics, which includes every gfx9 APU) | Windows ROCr PM4 path (gfx9, RDNA1/2) | gfx1036 + gfx1201 via gfx10-win (full hip-tests on gfx1036: 287 tests fixed vs the official ROCr runtime). Applies clean here; not rebuilt on gfx90c at this pin |
+| 13 | `0015-fix-rocr-wait-for-the-dxg-PM4-fence-in-the-KMD.patch` (from gfx10-win 0011) | rocm-systems dxg thunk `wddm/queue.cpp`, `wddm/device.{h,cpp}` | the same commit replaced the blocking fence wait with a 50 ms sleep poll, adding up to 50 ms to every CPU-completed signal. Wait on a KMD-signalled event with the same fault timeout (`WDDMDevice::CpuWaitTimeout`) | Windows ROCr PM4 path (gfx9, RDNA1/2) | gfx1036: `Unit_hipGraph_BasicFunctional` >600 s -> 0.97 s, `Unit_hipMultiStream_multimeDevice` >600 s -> 16 s; gfx1201 pass. Not rebuilt on gfx90c at this pin |
 
 Also found while root-causing fix 11 (not patched): the thunk's `ROCR_VISIBLE_DEVICES` handling in
 `init_vars_from_env()` sets `default_node`, but topology init runs later and overwrites it with
@@ -77,6 +79,16 @@ test.
 - Not rerun at the pin: the full hip-tests suite (about 1.5 h; earlier full runs used 7.15).
 - Linux full build of this branch (gfx1201): rocminfo, vadd, a `__builtin_trap` kernel (clean
   `HSA_STATUS_ERROR_EXCEPTION`), rocRAND 44/44, hipRAND 85/85.
+
+## 1c. Pin bump (2026-10-16)
+
+Merged TheRock main `248a92b`, the base gfx10-win uses: rocm-systems `6c654d4ff9` -> `b2d4b1ec26`,
+rocm-libraries `3d8f334b9a7` -> `3dc098eb2db`, amd-llvm -> `bdc35841c97f`, hipify -> main's pin. All carry patches
+replay with identical content (offsets only); fixes 12 and 13 are new because the new rocm-systems pin includes
+rocm-systems#11344. Opt-in X2 (`0004-dxg-gfx9-trap-handler.patch`) was rebased by hand onto fix 13: `CheckTrap()`
+now runs after the `CpuWaitTimeout` wait, and the trap-bind logic keeps upstream's new `SetTrapHandler` logging.
+Verified on Linux: every carry and opt-in patch applies strictly (`git am`, no 3-way) to the new pins.
+**Not yet rebuilt or rerun on the gfx90c box at this pin.**
 
 ## 2. Compiler, header, library and test fixes (correct results)
 

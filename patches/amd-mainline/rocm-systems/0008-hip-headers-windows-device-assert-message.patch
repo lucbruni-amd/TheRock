@@ -1,7 +1,7 @@
-From df55d406c3b348912bd84a917cf62c3cf01dc784 Mon Sep 17 00:00:00 2001
+From 3f5fc8091372275095e8bfb6022cd4d61a427b55 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] fix(clr): print the device assert message on Windows
+Subject: [PATCH 08/15] fix(clr): print the device assert message on Windows
 
 On Windows, assert() calls _wassert with wide strings, and the HIP device
 definition only called __builtin_trap(), so a failing device assert printed

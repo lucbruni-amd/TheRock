@@ -1,8 +1,8 @@
-From 097f9c04bf4942533038debcbefe6e0081ae3ea5 Mon Sep 17 00:00:00 2001
+From 2c069f914222332264e1cd2a9e280aee0f378c19 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0500
-Subject: [PATCH] test(miopen): skip instead of throwing on an uncharacterized
- GPU
+Subject: [PATCH 4/5] test(miopen): skip instead of throwing on an
+ uncharacterized GPU
 
 gtest_common.cpp throws "unknown_gpu" for any arch it does not list, so
 every solver test SetUp fails on, for example, gfx90c (382 failures) instead

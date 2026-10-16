@@ -1,8 +1,8 @@
-From 9ca8ddfb5aaf98b10cfcce0aa52e4efe2015c9f2 Mon Sep 17 00:00:00 2001
+From 841e3fa384d552e252a07287b5a7a487bf488ac4 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Tue, 13 Oct 2026 16:29:16 -0400
-Subject: [PATCH] fix(clr): mark gfx902/gfx909/gfx90c as XNACK-unsupported in
- the ISA table
+Subject: [PATCH 02/15] fix(clr): mark gfx902/gfx909/gfx90c as
+ XNACK-unsupported in the ISA table
 
 ROCr runs the gfx9 client APUs XNACK-off (#2669 for gfx90c, #8237 for
 gfx902/gfx909): it registers them as XNACK-unsupported with only the neutral
@@ -18,7 +18,7 @@ and :xnack- names and drop the :xnack+ variants, matching ROCr.
  1 file changed, 8 insertions(+), 9 deletions(-)
 
 diff --git a/projects/clr/rocclr/device/device.cpp b/projects/clr/rocclr/device/device.cpp
-index 2984751398..fe54362813 100644
+index cdca24b044..2b13c91fb2 100644
 --- a/projects/clr/rocclr/device/device.cpp
 +++ b/projects/clr/rocclr/device/device.cpp
 @@ -118,9 +118,10 @@ std::pair<const Isa*, const Isa*> Isa::supportedIsas() {

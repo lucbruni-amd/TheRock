@@ -1,0 +1,145 @@
+From f5c9997fd663f94888e4bd5be649fa7a8ed7fcb7 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <lucbruni@amd.com>
+Date: Fri, 16 Oct 2026 09:54:13 -0400
+Subject: [PATCH 15/15] fix(rocr): wait for the dxg PM4 fence in the KMD, not
+ with a 50 ms poll
+
+On adapters without platform atomics, ComputeQueue::Process() completes a
+packet's signal from the CPU after its submission's fence is reached.
+Before #11344 this was a blocking D3DKMTWaitForSynchronizationObjectFromCpu
+call. #11344 replaced it with a loop that reads the fence and sleeps 50 ms
+between reads, to add a fault timeout. Every CPU-completed signal now costs
+up to 50 ms (more with the default Windows timer resolution), so tests that
+chain many small submissions run hundreds of times slower. On the gfx1036
+Unit_hipGraph_BasicFunctional went from about 1 s to over 600 s, and
+Unit_hipMultiStream_multimeDevice from 16 s to over 600 s.
+
+Add WDDMDevice::CpuWaitTimeout(). On Windows it passes an event as
+hAsyncEvent so the KMD signals it when the fence is reached, then waits
+for the event with the fault timeout. Elsewhere it polls with a sleep that
+starts at 10 us and grows to 1 ms. Process() uses it and keeps the 30 s
+fault timeout and ROCR_DISABLE_WAIT_TIMEOUT behavior.
+---
+ .../libhsakmt/include/impl/wddm/device.h      |  4 ++
+ .../libhsakmt/src/dxg/wddm/device.cpp         | 49 +++++++++++++++++++
+ .../libhsakmt/src/dxg/wddm/queue.cpp          | 21 ++++----
+ 3 files changed, 64 insertions(+), 10 deletions(-)
+
+diff --git a/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h b/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
+index ef5e010cc8..6955d5ee3b 100644
+--- a/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
++++ b/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
+@@ -214,6 +214,10 @@ public:
+ 		  uint64_t *value, int count);
+   bool CpuWait(const D3DKMT_HANDLE *syncobjs, uint64_t *value,
+ 	       int count, bool wait_any);
++  // Waits until the fence at fence_addr reaches value, for at most timeout_ms (UINT32_MAX waits
++  // forever). Returns false on failure or timeout; *timed_out tells the two apart.
++  bool CpuWaitTimeout(D3DKMT_HANDLE syncobj, const uint64_t *fence_addr, uint64_t value,
++                      uint32_t timeout_ms, bool *timed_out);
+   bool WaitOnPagingFenceFromCpu();
+ 
+   uint32_t LdsBlocks(const hsa_kernel_dispatch_packet_t *pkt);
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp
+index 9f19eda792..0c2c76605d 100644
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp
+@@ -43,6 +43,8 @@
+ #include <cinttypes>
+ #include <algorithm>
+ #include <bitset>
++#include <chrono>
++#include <thread>
+ 
+ #if defined(__linux__)
+ #include <sys/mman.h>
+@@ -599,6 +601,53 @@ bool WDDMDevice::CpuWait(const D3DKMT_HANDLE *syncobjs, uint64_t *value,
+   return false;
+ }
+ 
++bool WDDMDevice::CpuWaitTimeout(D3DKMT_HANDLE syncobj, const uint64_t* fence_addr,
++                                uint64_t value, uint32_t timeout_ms, bool* timed_out) {
++  *timed_out = false;
++  if (rocr::atomic::Load(fence_addr, std::memory_order_acquire) >= value) return true;
++#if defined(WIN32)
++  // Have the KMD signal an event when the fence reaches the value. The wait then wakes up as
++  // soon as the GPU is done, like the blocking CpuWait(), and can still give up after timeout_ms.
++  HANDLE event = CreateEventW(nullptr, false, false, nullptr);
++  if (event == nullptr) {
++    pr_err("CreateEventW failed with error %lu\n", GetLastError());
++    return false;
++  }
++  D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU args = {0};
++  args.hDevice = device_;
++  args.ObjectCount = 1;
++  args.ObjectHandleArray = &syncobj;
++  args.FenceValueArray = &value;
++  args.hAsyncEvent = event;
++
++  bool ok = false;
++  NTSTATUS ret = DXCORE_CALL(D3DKMTWaitForSynchronizationObjectFromCpu(&args));
++  if (ret != STATUS_SUCCESS) {
++    pr_err("fail %x\n", ret);
++  } else {
++    const DWORD wait = WaitForSingleObject(event, (timeout_ms == UINT32_MAX) ? INFINITE : timeout_ms);
++    ok = (wait == WAIT_OBJECT_0);
++    *timed_out = (wait == WAIT_TIMEOUT);
++  }
++  // The KMD holds its own reference to the event, so it can be closed even after a timeout.
++  CloseHandle(event);
++  return ok;
++#else
++  // Poll with a short, growing sleep so a quick GPU completion is seen without a long delay.
++  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
++  auto sleep = std::chrono::microseconds(10);
++  while (rocr::atomic::Load(fence_addr, std::memory_order_acquire) < value) {
++    if ((timeout_ms != UINT32_MAX) && (std::chrono::steady_clock::now() >= deadline)) {
++      *timed_out = true;
++      return false;
++    }
++    std::this_thread::sleep_for(sleep);
++    sleep = std::min(sleep * 2, std::chrono::microseconds(1000));
++  }
++  return true;
++#endif
++}
++
+ bool WDDMDevice::WaitOnPagingFenceFromCpu() {
+   uint64_t page_fence_value = 0;
+ 
+diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
+index 7499afa4ec..b2d31c0710 100644
+--- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
++++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
+@@ -1180,17 +1180,18 @@ hsa_status_t ComputeQueue::Process(void) {
+       // count submissions, not packets: a merged run puts several packets in one
+       // submission, so comparing against cmdbuf_aql_frame_write_index waits for a
+       // fence value that is never signaled.
++      // Wait for the fence in the KMD rather than polling it with a 50 ms sleep: polling added up
++      // to 50 ms (more with the Windows timer resolution) to every CPU-completed signal.
+       const uint64_t fence_value = sync_point;
+-      constexpr int kFaultTimeoutMs = 30000;
+-      auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kFaultTimeoutMs);
+-      while (LoadSyncValue(sync_addr) < fence_value) {
+-        if (!dxg_runtime->disable_wait_timeout_ &&
+-            std::chrono::steady_clock::now() >= deadline) {
+-          pr_err("GPU fence timeout after %dms — possible device fault (sync_addr=%" PRIu64
+-                 " expected=%" PRIu64 ")\n", kFaultTimeoutMs, LoadSyncValue(sync_addr), fence_value);
+-          return static_cast<hsa_status_t>(HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION);
+-        }
+-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
++      constexpr uint32_t kFaultTimeoutMs = 30000;
++      bool timed_out = false;
++      if (!device->CpuWaitTimeout(syncobj, sync_addr, fence_value,
++                                  dxg_runtime->disable_wait_timeout_ ? UINT32_MAX : kFaultTimeoutMs,
++                                  &timed_out)) {
++        if (!timed_out) return HSA_STATUS_ERROR;
++        pr_err("GPU fence timeout after %ums, possible device fault (sync_addr=%" PRIu64
++               " expected=%" PRIu64 ")\n", kFaultTimeoutMs, LoadSyncValue(sync_addr), fence_value);
++        return static_cast<hsa_status_t>(HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION);
+       }
+       // CPU update completional signal
+       rocr::atomic::Decrement(signal_addr_);
+-- 
+2.43.0
+

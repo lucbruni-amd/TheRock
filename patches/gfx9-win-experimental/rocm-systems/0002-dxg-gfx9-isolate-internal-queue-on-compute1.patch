@@ -1,7 +1,7 @@
-From 9b72c0002f03356717b99dd4d8f9311bcc9559ca Mon Sep 17 00:00:00 2001
+From 4fa021e323ad502f861f0cf81287e1379fd7e599 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Tue, 13 Oct 2026 16:20:20 -0400
-Subject: [PATCH] gfx9-win: EXPERIMENTAL
+Subject: [PATCH 2/4] gfx9-win: EXPERIMENTAL
  dxg-gfx9-isolate-internal-queue-on-compute1
 
 Opt-in prototype, not for upstream as is.
@@ -24,7 +24,7 @@ kSchedulerIdCompute0. Not rebuilt or retested after the rebase.
  3 files changed, 19 insertions(+), 1 deletion(-)
 
 diff --git a/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h b/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
-index ef5e010cc8..94331a2919 100644
+index 6955d5ee3b..5bb52f19be 100644
 --- a/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
 +++ b/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
 @@ -115,6 +115,7 @@ public:
@@ -47,7 +47,7 @@ index ef5e010cc8..94331a2919 100644
    hsa_status_t VramAvail(uint64_t* available_bytes);
  
    void GetClockCounters(uint64_t *gpu, uint64_t *cpu);
-@@ -298,6 +304,7 @@ private:
+@@ -302,6 +308,7 @@ private:
    std::atomic<uint64_t> page_fence_value_;
  
    uint32_t cmdbuf_size_;
@@ -69,10 +69,10 @@ index f8fb999b8d..82453d91ef 100644
      HSAuint32 event_id = Event ? Event->EventId : 0;
      auto queue_ = new wsl::thunk::ComputeQueue(
 diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp
-index 70f700a352..572b1b7f43 100644
+index 0c2c76605d..f5852f32fb 100644
 --- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp
 +++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp
-@@ -494,6 +494,17 @@ bool WDDMDevice::Unlock(D3DKMT_HANDLE handle) {
+@@ -498,6 +498,17 @@ bool WDDMDevice::Unlock(D3DKMT_HANDLE handle) {
    return false;
  }
  

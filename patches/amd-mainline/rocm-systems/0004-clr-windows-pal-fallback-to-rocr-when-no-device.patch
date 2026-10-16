@@ -1,8 +1,8 @@
-From 69f13a477c648768fef73f61c264d0bb474b2a8d Mon Sep 17 00:00:00 2001
+From 9a2d6c61b145a9b7901585e83e02158337f0e090 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Tue, 13 Oct 2026 16:30:49 -0400
-Subject: [PATCH] fix(clr): use ROCr on Windows when the default PAL backend
- finds no GPU
+Subject: [PATCH 04/15] fix(clr): use ROCr on Windows when the default PAL
+ backend finds no GPU
 
 On Windows, Device::init() sets GPU_ENABLE_PAL=1 whenever the flag is at its
 default, so the PAL backend is used. PAL cannot enumerate gfx9 GPUs on
@@ -22,10 +22,10 @@ backend at all. Use ROCr by default instead. Leaving the flag at its default
  1 file changed, 29 insertions(+)
 
 diff --git a/projects/clr/rocclr/device/device.cpp b/projects/clr/rocclr/device/device.cpp
-index fe54362813..18727002e0 100644
+index 2b13c91fb2..544361b91f 100644
 --- a/projects/clr/rocclr/device/device.cpp
 +++ b/projects/clr/rocclr/device/device.cpp
-@@ -841,6 +841,8 @@ bool Device::init() {
+@@ -839,6 +839,8 @@ bool Device::init() {
    devices_ = nullptr;
    appProfile_.init();
  
@@ -34,7 +34,7 @@ index fe54362813..18727002e0 100644
    // Check if GPU_ENABLE_PAL env var is empty string, consider it as default
    const char* gpu_enable_pal_env = getenv("GPU_ENABLE_PAL");
    bool gpu_enable_pal_is_empty_string = (gpu_enable_pal_env != nullptr && gpu_enable_pal_env[0] == '\0');
-@@ -850,6 +852,7 @@ bool Device::init() {
+@@ -848,6 +850,7 @@ bool Device::init() {
      if (IS_WINDOWS) {
        // Windows default: PAL path
        GPU_ENABLE_PAL = 1;
@@ -42,7 +42,7 @@ index fe54362813..18727002e0 100644
      } else {
        // Linux default: ROCr path
        GPU_ENABLE_PAL = 0;
-@@ -858,7 +861,15 @@ bool Device::init() {
+@@ -856,7 +859,15 @@ bool Device::init() {
      // On Windows by default keep PAL path for now, until we completely switch to ROCr backend
      // Without this, roc::Device::init() returns true & disables PAL path in below code
      GPU_ENABLE_PAL = 1;
@@ -58,7 +58,7 @@ index fe54362813..18727002e0 100644
  
  // IMPORTANT: Note that we are initialiing HSA stack first and then
  // GPU stack. The order of initialization is signiicant and if changed
-@@ -905,6 +916,24 @@ bool Device::init() {
+@@ -903,6 +914,24 @@ bool Device::init() {
      ClPrint(amd::LOG_INFO, amd::LOG_INIT, "PAL backend initialized");
    }
  #endif  // WITH_PAL_DEVICE

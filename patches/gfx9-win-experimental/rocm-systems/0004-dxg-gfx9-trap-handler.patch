@@ -1,7 +1,7 @@
-From 02cd9c0b7b7e4bc3c5ba59596c911b9a4fdeea8b Mon Sep 17 00:00:00 2001
+From c112619db9fa087519c3b78ffe17df007d397f15 Mon Sep 17 00:00:00 2001
 From: Luca Bruni <luca.bruni@amd.com>
 Date: Tue, 13 Oct 2026 16:21:24 -0400
-Subject: [PATCH] gfx9-win: EXPERIMENTAL dxg-gfx9-trap-handler
+Subject: [PATCH 4/4] gfx9-win: EXPERIMENTAL dxg-gfx9-trap-handler
 
 Opt-in prototype (DXG_TRAP=1), not for upstream as is.
 
@@ -26,11 +26,11 @@ Not rebuilt or retested after the rebase.
  .../libhsakmt/include/impl/wddm/device.h      |  9 +++-
  .../rocr-runtime/libhsakmt/src/dxg/debug.cpp  | 11 +++-
  .../libhsakmt/src/dxg/wddm/cmd_util.cpp       |  2 +
- .../libhsakmt/src/dxg/wddm/device.cpp         | 33 +++++++++++-
+ .../libhsakmt/src/dxg/wddm/device.cpp         | 29 ++++++++++-
  .../libhsakmt/src/dxg/wddm/queue.cpp          |  4 ++
  .../hsa-runtime/core/inc/amd_gpu_agent.h      |  3 ++
  .../core/runtime/amd_gpu_agent.cpp            | 51 +++++++++++++++++++
- 8 files changed, 109 insertions(+), 5 deletions(-)
+ 8 files changed, 106 insertions(+), 4 deletions(-)
 
 diff --git a/projects/rocr-runtime/libhsakmt/include/impl/wddm/cmd_util.h b/projects/rocr-runtime/libhsakmt/include/impl/wddm/cmd_util.h
 index 73fc5e4a30..2810a1fd89 100644
@@ -45,10 +45,10 @@ index 73fc5e4a30..2810a1fd89 100644
  
  class CmdUtil {
 diff --git a/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h b/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
-index 94331a2919..18d7a4a70c 100644
+index 5bb52f19be..e1f49f3ef7 100644
 --- a/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
 +++ b/projects/rocr-runtime/libhsakmt/include/impl/wddm/device.h
-@@ -262,7 +262,11 @@ public:
+@@ -266,7 +266,11 @@ public:
    // Debugger support
    bool GetKmdDbgVersion(struct Wkmi::KmdDbgVersion *version) const;
    bool RegisterRuntimeState(uint32_t runtime_state, const void* r_debug, bool ttmp_setup_hint) const;
@@ -61,7 +61,7 @@ index 94331a2919..18d7a4a70c 100644
  
  private:
    bool Escape(void* priv_data, uint32_t priv_size, bool hw_access) const;
-@@ -305,6 +309,9 @@ private:
+@@ -309,6 +313,9 @@ private:
  
    uint32_t cmdbuf_size_;
    std::atomic<uint32_t> compute_queue_count_{0};
@@ -114,10 +114,10 @@ index 1e743bbb0d..7c322ebf24 100644
    GenerateSetShRegHeader(&dispatch.resource_regs, mmCOMPUTE_RESOURCE_LIMITS);
    dispatch.resource_regs.compute_resource_limits = 0x3ff;
 diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp
-index 572b1b7f43..665fc25386 100644
+index f5852f32fb..c4ce7b9489 100644
 --- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp
 +++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/device.cpp
-@@ -1460,14 +1460,43 @@ bool WDDMDevice::RegisterRuntimeState(uint32_t runtime_state, const void* r_debu
+@@ -1568,7 +1568,7 @@ bool WDDMDevice::RegisterRuntimeState(uint32_t runtime_state, const void* r_debu
    return ret;
  }
  
@@ -126,26 +126,24 @@ index 572b1b7f43..665fc25386 100644
    int priv_size = Wkmi::GetDebuggerCmdPrivDataSize();
    void* priv_data = alloca(priv_size);
  
-   memset(priv_data, 0, priv_size);
-   Wkmi::FillinTrapHandlerPrivData(priv_data, tba, tma);
- 
--  return Escape(priv_data, priv_size, true);
-+  bool ret = Escape(priv_data, priv_size, true);
-+
+@@ -1582,9 +1582,36 @@ bool WDDMDevice::SetTrapHandler(uint64_t tba, uint64_t tma) const {
+     pr_err("SetTrapHandler tba=0x%" PRIx64 " tma=0x%" PRIx64 " rejected by KMD;"
+            " faults will fall back to stall detection\n", tba, tma);
+   }
 +  // EXPERIMENT (DXG_TRAP=1): ROCr binds a gfx9 handler that records traps at TMA and ends the
 +  // wave. Only enable it per dispatch (TRAP_PRESENT) if the kernel driver accepted it.
 +  const char* exp = getenv("DXG_TRAP");
-+  if (ret && device_info_.major == 9 && exp != nullptr && exp[0] == '1' && tma != 0) {
++  if (ok && device_info_.major == 9 && exp != nullptr && exp[0] == '1' && tma != 0) {
 +    trap_mailbox_ = reinterpret_cast<volatile uint32_t*>(tma);
 +    trap_bound_ = true;
 +  }
 +  if (getenv("DXG_TRAP_DIAG") != nullptr) {
 +    fprintf(stderr, "[DXG_TRAP] SetTrapHandler escape: tba=0x%llx tma=0x%llx -> %s, bound=%d\n",
-+            (unsigned long long)tba, (unsigned long long)tma, ret ? "ok" : "FAILED", trap_bound_);
++            (unsigned long long)tba, (unsigned long long)tma, ok ? "ok" : "FAILED", trap_bound_);
 +  }
-+  return ret;
-+}
-+
+   return ok;
+ }
+ 
 +bool WDDMDevice::CheckTrap() {
 +  if (!trap_bound_) return false;
 +  uint32_t count = trap_mailbox_[0];
@@ -160,14 +158,16 @@ index 572b1b7f43..665fc25386 100644
 +    for (int i = 0; i < 16; i++) fprintf(stderr, "[DXG_TRAP]   ttmp%-2d = 0x%08x\n", i, rec[i]);
 +  }
 +  return true;
- }
++}
++
  
- 
+ } // namespace thunk
+ } // namespace wsl
 diff --git a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
-index 7ef09895e3..536cda0728 100644
+index ffac44deec..d46706107e 100644
 --- a/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
 +++ b/projects/rocr-runtime/libhsakmt/src/dxg/wddm/queue.cpp
-@@ -790,6 +790,7 @@ hsa_status_t ComputeQueue::KernelDispatchAqlToPm4(char* cpu, hsa_kernel_dispatch
+@@ -846,6 +846,7 @@ hsa_status_t ComputeQueue::KernelDispatchAqlToPm4(char* cpu, hsa_kernel_dispatch
    memset(info.scratchBaseOffset, 0, sizeof(info.scratchBaseOffset));
    info.offsetCnt = 0;
    info.pSeMask = se_mask_;
@@ -175,10 +175,10 @@ index 7ef09895e3..536cda0728 100644
    info.packetIndex = (reinterpret_cast<uint64_t>(packet) -
                        reinterpret_cast<uint64_t>(amd_queue_rocr_->hsa_queue.base_address)) /
        64;
-@@ -1157,6 +1158,9 @@ hsa_status_t ComputeQueue::Process(void) {
-       // because the wait array belongs to the KMD for the duration of the call.
-       uint64_t fence_value = sync_point;
-       if (!device->CpuWait(&syncobj, &fence_value, 1, false)) return HSA_STATUS_ERROR;
+@@ -1227,6 +1228,9 @@ hsa_status_t ComputeQueue::Process(void) {
+                " expected=%" PRIu64 ")\n", kFaultTimeoutMs, LoadSyncValue(sync_addr), fence_value);
+         return static_cast<hsa_status_t>(HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION);
+       }
 +      // A wave hit a trap (assert, abort, memory violation...): fail the queue like the kernel
 +      // driver does on Linux instead of reporting the dispatch as complete.
 +      if (device->CheckTrap()) return HSA_STATUS_ERROR_EXCEPTION;
