@@ -1,0 +1,122 @@
+From 00ebe9edbede50955a68db66d3af349293e89fc1 Mon Sep 17 00:00:00 2001
+From: Luca Bruni <lucbruni@amd.com>
+Date: Fri, 16 Oct 2026 09:35:24 -0400
+Subject: [PATCH] fix(clr): report pool access in hipMemGetAccess without the
+ VM heap
+
+Memory pool allocations made without the VM heap (Windows APUs after the
+VM heap was disabled there, IPC pools) are plain device allocations, not
+VMM mappings. hipMemGetAccess only asked the device for the VMM access of
+the address, so hsa_amd_vmem_get_access failed and the call returned
+hipErrorInvalidValue for those allocations.
+
+Look up the pool that owns the busy allocation first and report the
+pool's access for the queried device, as hipMemPoolGetAccess does. Pools
+that use the VM heap keep the VMM query.
+---
+ projects/clr/hipamd/src/hip_device.cpp       | 11 +++++++++++
+ projects/clr/hipamd/src/hip_internal.hpp     |  1 +
+ projects/clr/hipamd/src/hip_mempool_impl.cpp | 13 +++++++++++++
+ projects/clr/hipamd/src/hip_mempool_impl.hpp |  5 +++++
+ projects/clr/hipamd/src/hip_vm.cpp           | 11 ++++++++++-
+ 5 files changed, 40 insertions(+), 1 deletion(-)
+
+diff --git a/projects/clr/hipamd/src/hip_device.cpp b/projects/clr/hipamd/src/hip_device.cpp
+index 49f563faac..d0b73fc1a4 100644
+--- a/projects/clr/hipamd/src/hip_device.cpp
++++ b/projects/clr/hipamd/src/hip_device.cpp
+@@ -114,6 +114,17 @@ void Device::ReleaseFreedMemory() {
+   }
+ }
+ 
++// ================================================================================================
++bool Device::GetPoolMemoryAccess(amd::Memory* memory, Device* device, hipMemAccessFlags* flags) {
++  std::scoped_lock lock(lock_);
++  for (auto* pool : mem_pools_) {
++    if (pool->GetMemoryAccess(memory, device, flags)) {
++      return true;
++    }
++  }
++  return false;
++}
++
+ // ================================================================================================
+ void Device::RemoveStreamFromPools(Stream* stream) {
+   std::scoped_lock lock(lock_);
+diff --git a/projects/clr/hipamd/src/hip_internal.hpp b/projects/clr/hipamd/src/hip_internal.hpp
+index 46bf03ef81..6e5836b02a 100644
+--- a/projects/clr/hipamd/src/hip_internal.hpp
++++ b/projects/clr/hipamd/src/hip_internal.hpp
+@@ -670,6 +670,7 @@ namespace hip {
+     bool FreeMemory(amd::Memory* memory, Stream* stream, Event* event = nullptr,
+                     bool skip_event = false);
+     void ReleaseFreedMemory();
++    bool GetPoolMemoryAccess(amd::Memory* memory, Device* device, hipMemAccessFlags* flags);
+     void RemoveStreamFromPools(Stream* stream);
+     void AddSafeStream(Stream* event_stream, Stream* wait_stream);
+     bool IsMemoryPoolValid(MemoryPool* pool);
+diff --git a/projects/clr/hipamd/src/hip_mempool_impl.cpp b/projects/clr/hipamd/src/hip_mempool_impl.cpp
+index 77917bd673..9630fe5990 100644
+--- a/projects/clr/hipamd/src/hip_mempool_impl.cpp
++++ b/projects/clr/hipamd/src/hip_mempool_impl.cpp
+@@ -501,6 +501,19 @@ void MemoryPool::GetAccess(hip::Device* device, hipMemAccessFlags* flags) {
+   }
+ }
+ 
++// ================================================================================================
++bool MemoryPool::GetMemoryAccess(amd::Memory* memory, hip::Device* device,
++                                 hipMemAccessFlags* flags) {
++  {
++    std::scoped_lock lock(lock_pool_ops_);
++    if (state_.use_vm_heap_ || !busy_heap_.IsActiveMemory(memory)) {
++      return false;
++    }
++  }
++  GetAccess(device, flags);
++  return true;
++}
++
+ // ================================================================================================
+ void MemoryPool::FreeAllMemory(Stream* stream) {
+   // skip_event=true: ordering is guaranteed by the caller (AutoFreeOnLaunch path
+diff --git a/projects/clr/hipamd/src/hip_mempool_impl.hpp b/projects/clr/hipamd/src/hip_mempool_impl.hpp
+index 89107f59c9..b78e706da0 100644
+--- a/projects/clr/hipamd/src/hip_mempool_impl.hpp
++++ b/projects/clr/hipamd/src/hip_mempool_impl.hpp
+@@ -322,6 +322,11 @@ class MemoryPool : public amd::ReferenceCountedObject, amd::VmHeapArray {
+   /// Set memory pool access by different devices
+   void GetAccess(hip::Device* device, hipMemAccessFlags* flags);
+ 
++  /// Gets the access of a device to a busy allocation of this pool. Returns false if the memory
++  /// isn't a busy allocation of this pool or if the pool uses the VM heap, which tracks access
++  /// in the VMM mappings instead.
++  bool GetMemoryAccess(amd::Memory* memory, hip::Device* device, hipMemAccessFlags* flags);
++
+   /// Frees all busy memory
+   void FreeAllMemory(hip::Stream* stream = nullptr);
+ 
+diff --git a/projects/clr/hipamd/src/hip_vm.cpp b/projects/clr/hipamd/src/hip_vm.cpp
+index 9cac45b1ce..01c78224fe 100644
+--- a/projects/clr/hipamd/src/hip_vm.cpp
++++ b/projects/clr/hipamd/src/hip_vm.cpp
+@@ -250,7 +250,16 @@ hipError_t hipMemGetAccess(unsigned long long* flags, const hipMemLocation* loca
+   auto& dev = g_devices[location->id];
+   amd::Device::VmmAccess access_flags = static_cast<amd::Device::VmmAccess>(0);
+ 
+-  if (!dev->devices()[0]->GetMemAccess(ptr, &access_flags)) {
++  // Pool allocations made without the VM heap (e.g. on Windows APUs or IPC pools) are not VMM
++  // mappings, so the device has no access record for them. Report the pool access instead.
++  size_t offset = 0;
++  amd::Memory* memory = getMemoryObject(dev, ptr, offset);
++  hipMemAccessFlags pool_flags = hipMemAccessFlagsProtNone;
++  if ((memory != nullptr) &&
++      (static_cast<size_t>(memory->getUserData().deviceId) < g_devices.size()) &&
++      g_devices[memory->getUserData().deviceId]->GetPoolMemoryAccess(memory, dev, &pool_flags)) {
++    access_flags = static_cast<amd::Device::VmmAccess>(pool_flags);
++  } else if (!dev->devices()[0]->GetMemAccess(ptr, &access_flags)) {
+     HIP_RETURN(hipErrorInvalidValue);
+   }
+ 
+-- 
+2.43.0
+
