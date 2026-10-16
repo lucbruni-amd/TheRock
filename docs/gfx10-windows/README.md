@@ -51,6 +51,8 @@ gfx9-specific.
 | rocm-libraries 0002 | MIOpen MultiMarginLoss `long` vs `int64_t` (LLP64) | matches the gfx1030 Windows MultiMarginLoss CI failures (fixed the same failure on gfx1036) | gfx9-win L4 |
 | rocm-libraries 0003 | MIOpen gtests throw `unknown_gpu` on uncharacterized archs | gfx1036 and other gfx10 iGPUs | gfx9-win L2 |
 | rocm-systems 0009 | since rocm-systems#11344 (`f36603ec78`, 2026-10-09) the dxg PM4 path waits for a packet index instead of the submission fence on adapters without platform atomics; every signal after a merged run stalls 30 s and reports an aperture violation | gfx1036 iGPU: `Unit_hipStreamCreateWithPriority*` 0/7 -> 11/13 (as PAL and pre-regression); still on rocm-systems `develop` | new, bisected over 193 commits on gfx1036 |
+| rocm-systems 0010 | `hipMemGetAccess` fails on pool allocations made without the VM heap (APUs after 0002, IPC pools) | fixes the 0002 regression found in the full run | new |
+| rocm-systems 0011 | since rocm-systems#11344 the dxg PM4 path polls the fence with a 50 ms sleep; tests with many small submissions run hundreds of times slower | gfx1036: two hip-tests from >600 s to ~1 s / 16 s | new |
 | rocm-libraries 0004 | hipBLASLt silently returns nullptr when a Tensile library fails to load | turns the gfx1030 "Could not load TensileLibrary" failures into a stated cause | community: rocm-libraries#9219 (GrecAndrei, closed unmerged) |
 | rocm-libraries 0005 | MIOpen ImplicitGemm V4R1/V4R4 WrW tests use FLT_EPSILON on gfx103X; only gfx908/gfx90a get the relaxed tolerance | measured on gfx1036: 30x and 1.3x, within the existing 40x / 2x | new |
 | llvm-project 0001 | device-libs dot builtins on targets without dot instructions; fdot2 regression | **gfx1010 fdot2 regression; gfx1013 missing from the software lists** | gfx9-win C1 |
@@ -123,9 +125,12 @@ workarounds and packaging. What it tells us:
   - 287 tests fixed by this branch (`results/fixed_by_gfx10win.txt`); 286 are the 30 s stall from
     rocm-systems `f36603ec78`, fixed by rocm-systems 0009.
   - Regression from rocm-systems 0002: `Contract_MemLocationPool_HipMemGetAccess_Default` (hipMemGetAccess on a
-    pooled allocation fails with the VM heap off). Fix in progress.
+    pooled allocation fails with the VM heap off). **Fixed by rocm-systems 0010** (mempool/access subset 98/99 -> 99/99 on gfx1036, 99/99 on gfx1201).
   - `Unit_hipGraph_BasicFunctional`, `Unit_hipMultiStream_multimeDevice` hang on ROCr in both runtimes since
-    `f36603ec78`, even with 0009. Root cause in progress.
+    `f36603ec78`, even with 0009. Not a hang: #11344 replaced the blocking fence wait with a 50 ms sleep poll, so every
+    CPU-completed signal costs up to 50 ms. **Fixed by rocm-systems 0011** (KMD-signalled event wait with the same
+    fault timeout): BasicFunctional >600 s -> 0.97 s, multimeDevice >600 s -> 16 s; 1046 stream/graph/mempool/event
+    tests on the fixed build show no regressions vs the full run.
   - Box-build artifacts, not patches: 4 printf tests (fail on any runtime built on the test box), 3
     `hipEnvGpuEnablePal` tests (box build has no PAL).
   - 19 test-side failures in all three configurations (`results/common_failures.txt`): grid dimension 0 in
