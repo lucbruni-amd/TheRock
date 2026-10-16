@@ -41,9 +41,9 @@ cross-queue waits (section 7; 2 of them TheRock ignores on gfx110X).
 | 10 | `0004-clr-windows-pal-fallback-to-rocr-when-no-device.patch` (refined 2026-10-13 for the Phase 2 PR: switches only when ROCr registers a GPU, HIP only, no ROCr offline devices; PAL-less branch validated on gfx90c at the current pin, PAL-on branch by inspection) | rocm-systems CLR `rocclr/device/device.cpp` | `Device::init()` forces `GPU_ENABLE_PAL=1` on Windows when the flag is default; PAL has no gfx9, so gfx9 gets no device unless the user sets `GPU_ENABLE_PAL=0`. Two parts: (1) PAL-less builds (ROCCLR_ENABLE_PAL=OFF, incl. the box) force `GPU_ENABLE_PAL=0` on Windows default (the default 2 trips `rocdevice.cpp`'s "disable HSA except gfx942" `==2` guard, so ROCr inits but registers no device); (2) PAL-on builds (shipped TheRock, =ON) fall back to ROCr when the Windows-default PAL path registers no online device | gfx9 Windows (works out of the box) | **Part 1 VALIDATED** on gfx90c box (PAL-OFF): with `GPU_ENABLE_PAL` unset, unpatched = "No devices found", patched = gfx90c enumerates + GETRI 84/84 pass. Part 2 correct-by-inspection (box cannot build PAL-ON). RDNA-on-PAL untouched (numDevices>0 guard); `clr-windows-pal-fallback-evidence/` |
 | 11 | `0010-rocr-dxg-map-system-memory-to-peer-adapters.patch` | rocm-systems dxg thunk `memory.cpp`, `wddm/gpu_memory.{h,cpp}` | host (CPU-node) allocations are created on one WDDM adapter (`default_node`, always the first GPU) and `hsaKmtMapMemoryToGPUNodes` returned success for the other GPUs without mapping anything. Every GPU but the first gets unmapped kernarg/staging/host-pool VAs and hangs on its first operation. Exposed by the 2026-07-10 wkmi update (rocm-systems 5190f14b56), which enumerates gfx103X APUs under ROCr, so the iGPU became node 1 (bisected 7.15.0a20260711 good, 0713 bad). Fix: mirror each kSystem allocation onto every requested peer adapter over the same CPU pages, at the same SVM address (already reserved on all adapters) | Windows ROCr, any multi-adapter system (common: Ryzen iGPU + dGPU); not gfx9-specific | gfx1036 + gfx1201: gfx1201 HANG -> OK; both GPUs in one process incl. cross-device via pinned host OK; both ownership orders OK; 300-iteration alloc/use/free stress 0 mismatches (stock 10.1 hangs); single-GPU gfx1100 unchanged. Built from the box's older source tree (ported line for line; the Lock2 line has no equivalent there) |
 
-| 9b | `0013-fix-clr-report-pool-access-in-hipMemGetAccess-without-the-VM-heap.patch` | rocm-systems CLR `hip_vm.cpp`, `hip_mempool_impl.*` | fix 9 turns the memory-pool VM heap off on Windows APUs, after which `hipMemGetAccess` on a pool allocation fails (it only asked for VMM access). Report the owning pool's access instead. Found by the gfx10-win full hip-tests run (`Contract_MemLocationPool_HipMemGetAccess_Default`) | Windows ROCr APUs; IPC pools on all OSes | gfx1036: 98/99 -> 99/99 mempool/access subset; gfx1201 99/99. Validated at the gfx10-win pin, applies clean here; not rebuilt at this pin |
-| 12 | `0014-fix-rocr-wait-for-the-submission-fence-not-the-packe.patch` (from gfx10-win 0009) | rocm-systems dxg thunk `wddm/queue.cpp` | since rocm-systems#11344 (f36603ec78, first in this branch's pin with the 2026-10-16 bump) the PM4 path waits for the AQL packet index instead of the submission fence. A merged run puts several packets in one submission, so every CPU-completed signal after one stalls until the 30 s fault timeout (adapters without platform atomics, which includes every gfx9 APU) | Windows ROCr PM4 path (gfx9, RDNA1/2) | gfx1036 + gfx1201 via gfx10-win (full hip-tests on gfx1036: 287 tests fixed vs the official ROCr runtime). Applies clean here; not rebuilt on gfx90c at this pin |
-| 13 | `0015-fix-rocr-wait-for-the-dxg-PM4-fence-in-the-KMD.patch` (from gfx10-win 0011) | rocm-systems dxg thunk `wddm/queue.cpp`, `wddm/device.{h,cpp}` | the same commit replaced the blocking fence wait with a 50 ms sleep poll, adding up to 50 ms to every CPU-completed signal. Wait on a KMD-signalled event with the same fault timeout (`WDDMDevice::CpuWaitTimeout`) | Windows ROCr PM4 path (gfx9, RDNA1/2) | gfx1036: `Unit_hipGraph_BasicFunctional` >600 s -> 0.97 s, `Unit_hipMultiStream_multimeDevice` >600 s -> 16 s; gfx1201 pass. Not rebuilt on gfx90c at this pin |
+| 9b | `0013-fix-clr-report-pool-access-in-hipMemGetAccess-without-the-VM-heap.patch` | rocm-systems CLR `hip_vm.cpp`, `hip_mempool_impl.*` | fix 9 turns the memory-pool VM heap off on Windows APUs, after which `hipMemGetAccess` on a pool allocation fails (it only asked for VMM access). Report the owning pool's access instead. Found by the gfx10-win full hip-tests run (`Contract_MemLocationPool_HipMemGetAccess_Default`) | Windows ROCr APUs; IPC pools on all OSes | gfx1036: 98/99 -> 99/99 mempool/access subset; gfx1201 99/99. Validated at the gfx10-win pin; built and smoke-tested on gfx90c at the 2026-10-16 pin (section 1c) |
+| 12 | `0014-fix-rocr-wait-for-the-submission-fence-not-the-packe.patch` (from gfx10-win 0009) | rocm-systems dxg thunk `wddm/queue.cpp` | since rocm-systems#11344 (f36603ec78, first in this branch's pin with the 2026-10-16 bump) the PM4 path waits for the AQL packet index instead of the submission fence. A merged run puts several packets in one submission, so every CPU-completed signal after one stalls until the 30 s fault timeout (adapters without platform atomics, which includes every gfx9 APU) | Windows ROCr PM4 path (gfx9, RDNA1/2) | gfx1036 + gfx1201 via gfx10-win (full hip-tests on gfx1036: 287 tests fixed vs the official ROCr runtime). gfx90c at this pin: see section 1c |
+| 13 | `0015-fix-rocr-wait-for-the-dxg-PM4-fence-in-the-KMD.patch` (from gfx10-win 0011) | rocm-systems dxg thunk `wddm/queue.cpp`, `wddm/device.{h,cpp}` | the same commit replaced the blocking fence wait with a 50 ms sleep poll, adding up to 50 ms to every CPU-completed signal. Wait on a KMD-signalled event with the same fault timeout (`WDDMDevice::CpuWaitTimeout`) | Windows ROCr PM4 path (gfx9, RDNA1/2) | gfx1036: `Unit_hipGraph_BasicFunctional` >600 s -> 0.97 s, `Unit_hipMultiStream_multimeDevice` >600 s -> 16 s; gfx1201 pass. gfx90c: 0.80 s and 15.7 s (section 1c) |
 
 Also found while root-causing fix 11 (not patched): the thunk's `ROCR_VISIBLE_DEVICES` handling in
 `init_vars_from_env()` sets `default_node`, but topology init runs later and overwrites it with
@@ -88,7 +88,31 @@ replay with identical content (offsets only); fixes 12 and 13 are new because th
 rocm-systems#11344. Opt-in X2 (`0004-dxg-gfx9-trap-handler.patch`) was rebased by hand onto fix 13: `CheckTrap()`
 now runs after the `CpuWaitTimeout` wait, and the trap-bind logic keeps upstream's new `SetTrapHandler` logging.
 Verified on Linux: every carry and opt-in patch applies strictly (`git am`, no 3-way) to the new pins.
-**Not yet rebuilt or rerun on the gfx90c box at this pin.**
+
+Rebuilt and rerun on the gfx90c box the same day, with the **patched legacy 23.19.25.01 KMD**
+(SWDEV-613119, fix F1 in the KMD) and the **stock prebuilt `wkmi.lib`** this rocm-systems pin ships
+(DVC md5 `f1a4636b`, no wkmi patches). This is the Phase 1 target configuration. Building wkmi from
+source against the legacy KMD headers fails (`AllocRequest3Flags.AqlCwsr` missing), so the box now
+links the prebuilt library (`pinval\buildpre.bat`). Same toolchain and flags as section 1b.
+
+| check | 9: carry 0001-0015 | 9x: carry + opt-in 0001-0004 |
+|---|---|---|
+| build | OK | OK (X2 rebased onto fix 13) |
+| vadd canary, `GPU_ENABLE_PAL` unset / =0 | OK / OK | OK / not run |
+| hipInfo | gfx90c, 8 CUs, **100000 / 106700 MHz** (stock wkmi: 100x, fixed by wkmi#34) | same |
+| CU mask probe, distinct CUs default / 0x1 / 0x3 | 8 / 8 / 8 | 8 / 1 / 2 |
+| `DXG_TRAP=1` | n/a | KMD refuses the escape, handler not bound, runs clean |
+| 4 `hipMalloc[FromPool]Async_Basic_*` | crash (queue error, clean `HSA_STATUS_ERROR_EXCEPTION`) | 4/4 pass |
+| `Unit_hipStreamWaitValue_Default` u32/u64 | 2 fail | 2/2 pass |
+| `Unit_hipGraph_BasicFunctional` (fixes 12+13) | 0.80 s pass | 0.82 s pass |
+| `Unit_hipMultiStream_multimeDevice` (fixes 12+13) | 15.7 s pass | 15.7 s pass |
+| 121 StreamTest cases except Wait_Blocking, one per process | the 2 open + the 2 above | the 2 open only |
+| `Unit_hipStreamValue_Write` (7 template cases) | 7/7 pass | 7/7 pass |
+
+Identical to states A and B at the old pin: zero regressions. Harness note: `iso.ps1` now classifies by
+exit code (Catch2 4 = all skipped, the multi-GPU cases on this one-GPU box) and starts the test
+directly, because `cmd` treated `<...>` in template test names as redirection (those 7 cases never
+ran in earlier sweeps; run here separately).
 
 ## 2. Compiler, header, library and test fixes (correct results)
 
@@ -249,6 +273,10 @@ ROCr parts compile on Linux, the dxg parts have not been rebuilt since the rebas
   `blas_level1_thread+0x197`. Host reference BLAS only, not rocSOLVER/kernel/runtime; the identical
   suite passes 192/192 on gfx906-Linux (Linux OpenBLAS). Affects any GPU running these tests on
   Windows. Belongs in the rocm OpenBLAS build, not this gfx9 package.
+- Since the 2026-10-16 pin, every HIP process on a KMD that refuses the set-trap escape (the legacy
+  23.19 KMD, so every gfx9 consumer part) prints `SetTrapHandler ... rejected by KMD; faults will fall
+  back to stall detection` to stderr (`pr_err` in dxg `WDDMDevice::SetTrapHandler`). Harmless but
+  user-visible on every run; a one-time `pr_info` would do. Not patched.
 
 ## Runtime builds on the box (`C:\Users\rocm\dllstash`)
 
