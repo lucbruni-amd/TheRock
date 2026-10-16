@@ -110,5 +110,24 @@ workarounds and packaging. What it tells us:
   (rocm-systems `b2d4b1ec26`, rocm-libraries `3dc098eb2d`, amd-llvm `bdc35841c9`).
 - The patches inherited from gfx9-win were validated on gfx90c and gfx1036 at earlier pins (see the gfx9-win
   branch, `docs/gfx9-windows/CATALOG.md`). Not yet rebuilt at these pins as a whole.
-- 2026-10-15: the rocm-systems carry (0001-0008) plus 0009 was built at the `b2d4b1ec26` pin and run on the gfx1036 iGPU and gfx1201 dGPU (ROCr): hip-tests discovery OK on every device combination, StreamCreateWithPriority 11/13 (matches PAL). Full hip-tests at this pin: pending.
+- 2026-10-15: the rocm-systems carry (0001-0008) plus 0009 was built at the `b2d4b1ec26` pin and run on the gfx1036 iGPU and gfx1201 dGPU (ROCr): hip-tests discovery OK on every device combination, StreamCreateWithPriority 11/13 (matches PAL). Full hip-tests: see below.
+- 2026-10-16, full hip-tests on the gfx1036 iGPU (official 10.2.0a20261014 test tarball, 4119 tests, CI settings,
+  only gfx1036 visible). Per-test results in `results/`.
+
+  | runtime | pass | fail | timeout | crash | time |
+  |---|---|---|---|---|---|
+  | this branch (rocm-systems 0001-0009), ROCr | 2606 | 27 | 2 | 1 | ~4.5 h |
+  | official nightly, ROCr | 2327 | 253 | 34 | 22 | ~10.5 h |
+  | official nightly, PAL (CI configuration) | 3210 | 19 | 0 | 0 | 21 min |
+
+  - 287 tests fixed by this branch (`results/fixed_by_gfx10win.txt`); 286 are the 30 s stall from
+    rocm-systems `f36603ec78`, fixed by rocm-systems 0009.
+  - Regression from rocm-systems 0002: `Contract_MemLocationPool_HipMemGetAccess_Default` (hipMemGetAccess on a
+    pooled allocation fails with the VM heap off). Fix in progress.
+  - `Unit_hipGraph_BasicFunctional`, `Unit_hipMultiStream_multimeDevice` hang on ROCr in both runtimes since
+    `f36603ec78`, even with 0009. Root cause in progress.
+  - Box-build artifacts, not patches: 4 printf tests (fail on any runtime built on the test box), 3
+    `hipEnvGpuEnablePal` tests (box build has no PAL).
+  - 19 test-side failures in all three configurations (`results/common_failures.txt`): grid dimension 0 in
+    tiled-partition/warp tests, too few CUs for execution-context tests.
 - Hardware we have: gfx1036 iGPU + gfx1201 dGPU on 10.6.177.171 (Windows 11). No discrete RDNA2 or any RDNA1.
